@@ -1,0 +1,36 @@
+# Environment
+.env
+
+# Input - never commit JD staging
+jds/
+
+
+# Output - never commit generated CVs or JDs
+output/
+
+# Personal prompt additions - never commit
+prompts/personal_additions.md
+
+# Fonts - downloaded locally, not committed
+fonts/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp

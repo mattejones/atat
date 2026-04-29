@@ -1,0 +1,19 @@
+# Personal Prompt Additions
+# 
+# This file is gitignored. It is loaded at runtime and appended to the
+# system prompt. Use it for personal preferences, additional constraints,
+# or style guidance that should not be committed to the public repo.
+#
+# Examples of what belongs here:
+#   - Preferred CV length or formatting quirks
+#   - Tone preferences specific to you
+#   - Additional DO NOT INCLUDE rules beyond what is in meta.md
+#   - Specific companies or roles to always treat as T1
+#   - Any other personal context the LLM should know
+#
+# This file will be read if it exists. If absent, the pipeline continues
+# without it — no errors.
+
+## Additional rules
+
+# Add your personal additions below this line.
