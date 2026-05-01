@@ -5,13 +5,13 @@ Pipeline:
   1. Read JD (file or text)
   2. Assemble full cv-library context (library FIRST, JD LAST)
   3. Optionally inject per-application generation notes before the JD
-  4. Call LLM — produces tailored CV Markdown
-  5. Extract reasoning if present in output (model misfired) — save to reasoning.md
-  6. Write output folder (jd.txt, cv.md, reasoning.md, run_meta.json)
-  7. Render cv.md → cv.pdf via Typst (if RENDER_PDF is enabled)
+  4. Call LLM — produces output with ---BEGIN_CV--- sentinel separating reasoning from CV
+  5. Extract reasoning and CV cleanly on the sentinel
+  6. Write output folder (jd.txt, cv.md, reasoning.md if present, run_meta.json)
+  7. Render cv.md to cv.pdf via Typst (if RENDER_PDF is enabled)
 
 Returns:
-  (output_dir, cv_markdown, reasoning) — reasoning is empty string if none captured
+  (output_dir, cv_markdown, reasoning)
 """
 
 import json
@@ -29,6 +29,8 @@ from pipeline.config import (
 )
 
 log = logging.getLogger(__name__)
+
+CV_SENTINEL = "---BEGIN_CV---"
 
 
 # ── Library Loaders ───────────────────────────────────────────────────────────
@@ -110,39 +112,40 @@ def assemble_user_message(jd_text: str, generation_notes: Optional[str] = None) 
 """
 
 
-# ── Reasoning extraction ──────────────────────────────────────────────────────
+# ── Sentinel-based extraction ─────────────────────────────────────────────────
 
 def extract_reasoning_and_cv(raw_output: str) -> tuple[str, str]:
     """
-    Separate reasoning from CV in the LLM output.
+    Split LLM output into reasoning and CV using the ---BEGIN_CV--- sentinel.
 
-    When extended thinking is working correctly, the model outputs only the CV
-    and reasoning is empty. When it misfires (outputs reasoning as text), this
-    function detects the pattern and splits the output cleanly.
+    The prompt instructs the model to always output the sentinel immediately
+    before the CV. Everything before it is reasoning; everything after is CV.
 
-    Detection: if the output contains "## STEP" headers before the first H1,
-    the content before the CV heading is reasoning.
+    Falls back to heuristic (first # Name heading) if sentinel is absent.
 
     Returns:
-        (reasoning, cv_markdown)
+        (reasoning, cv_markdown) — reasoning is empty string when none present.
     """
-    # Find the first top-level heading that looks like a name (# Firstname ...)
-    # This marks the start of the actual CV
-    cv_start_match = re.search(r'^# [A-Z][a-zA-Z]', raw_output, re.MULTILINE)
+    if CV_SENTINEL in raw_output:
+        parts     = raw_output.split(CV_SENTINEL, 1)
+        reasoning = parts[0].strip()
+        cv        = parts[1].strip()
+        if reasoning:
+            log.info(f"Reasoning captured via sentinel: {len(reasoning)} chars")
+        return reasoning, cv
 
-    if cv_start_match and cv_start_match.start() > 0:
-        reasoning_candidate = raw_output[:cv_start_match.start()].strip()
-        cv_candidate        = raw_output[cv_start_match.start():].strip()
-
-        # Only treat as reasoning if it actually contains step content
-        if re.search(r'## STEP\s+\d', reasoning_candidate, re.IGNORECASE):
+    # Fallback: sentinel absent — try to find first # Name heading
+    cv_start = re.search(r'^# [A-Z]', raw_output, re.MULTILINE)
+    if cv_start and cv_start.start() > 0:
+        reasoning_candidate = raw_output[:cv_start.start()].strip()
+        cv_candidate        = raw_output[cv_start.start():].strip()
+        if reasoning_candidate:
             log.warning(
-                "Model output included reasoning as text — extracting and saving separately. "
-                "This indicates extended thinking may not be active."
+                "Model omitted ---BEGIN_CV--- sentinel — using heuristic split. "
+                f"Reasoning: {len(reasoning_candidate)} chars"
             )
             return reasoning_candidate, cv_candidate
 
-    # Normal case: no reasoning in output
     return "", raw_output.strip()
 
 
@@ -185,13 +188,12 @@ def _call_anthropic(system: str, user: str) -> str:
         **extra_kwargs,
     )
 
-    # Capture extended thinking content if present (for future logging)
     thinking_text = "".join(
         block.thinking for block in message.content
         if hasattr(block, 'thinking') and block.thinking
     )
     if thinking_text:
-        log.info(f"Extended thinking captured: {len(thinking_text)} chars")
+        log.info(f"Extended thinking captured internally: {len(thinking_text)} chars")
 
     output_text = "".join(
         block.text for block in message.content if block.type == "text"

@@ -91,9 +91,7 @@ function RoleDetails({ meta, onSave }: { meta: any; onSave: (updates: any) => vo
             <button onClick={save} disabled={saving} className="text-xs text-accent hover:underline disabled:opacity-50">
               {saving ? "Saving…" : "Save"}
             </button>
-            <button onClick={() => setEditing(false)} className="text-xs text-text-muted hover:text-text-secondary">
-              Cancel
-            </button>
+            <button onClick={() => setEditing(false)} className="text-xs text-text-muted hover:text-text-secondary">Cancel</button>
           </div>
         )}
       </div>
@@ -134,9 +132,7 @@ function RoleDetails({ meta, onSave }: { meta: any; onSave: (updates: any) => vo
                   <button key={d} onClick={() => setForm((f) => ({ ...f, hybrid_days: d }))}
                     className={`w-8 h-7 text-xs rounded-md border transition-colors ${
                       Number(form.hybrid_days) === d ? "bg-accent text-white border-accent" : "border-bg-border text-text-secondary hover:border-accent/50"
-                    }`}>
-                    {d}
-                  </button>
+                    }`}>{d}</button>
                 ))}
                 <span className="text-xs text-text-muted self-center ml-1">days/wk</span>
               </div>
@@ -173,18 +169,24 @@ function Detail({ label, value }: { label: string; value: string }) {
 
 // ── Reasoning panel ───────────────────────────────────────────────────────────
 
-function ReasoningPanel({ content }: { content: string }) {
-  if (!content) return (
-    <div className="bg-bg-elevated p-8 text-center text-text-muted text-sm min-h-[40vh] flex items-center justify-center">
-      <div>
-        <p className="font-medium mb-1">No reasoning captured</p>
-        <p className="text-xs">
-          Reasoning is captured when the model outputs its chain-of-thought as text.
-          With extended thinking enabled, reasoning happens internally and is not visible here.
-        </p>
+function ReasoningPanel({ content, hasReasoning }: { content: string; hasReasoning: boolean }) {
+  if (!hasReasoning || !content) {
+    return (
+      <div className="bg-bg-elevated p-8 min-h-[40vh] flex items-center justify-center">
+        <div className="text-center max-w-sm space-y-2">
+          <p className="text-sm font-medium text-text-secondary">Extended thinking was used</p>
+          <p className="text-xs text-text-muted leading-relaxed">
+            The model reasoned internally using its extended thinking budget before writing this CV.
+            That reasoning is private to the model and not surfaced in the output — which means it worked as intended.
+          </p>
+          <p className="text-xs text-text-muted mt-3">
+            Reasoning only appears here when the model outputs it as text, which happens
+            when extended thinking is disabled or the model uses the sentinel to separate its chain-of-thought.
+          </p>
+        </div>
       </div>
-    </div>
-  );
+    );
+  }
 
   return (
     <div className="bg-bg-elevated p-8 min-h-[60vh] space-y-4">
@@ -209,21 +211,21 @@ export default function ApplicationPage() {
   const [content, setContent]         = useState("");
   const [edited, setEdited]           = useState("");
   const [reasoning, setReasoning]     = useState<string>("");
+  const [hasReasoning, setHasReasoning] = useState(false);
   const [view, setView]               = useState<ViewMode>("preview");
   const [dirty, setDirty]             = useState(false);
   const [saving, setSaving]           = useState(false);
   const [rendering, setRendering]     = useState(false);
-  const [loadingReason, setLoadingReason] = useState(false);
   const [hasPdf, setHasPdf]           = useState(false);
-  const [hasReasoning, setHasReasoning] = useState(false);
   const [error, setError]             = useState<string | null>(null);
 
   useEffect(() => { loadData(); }, [id]);
 
   async function loadData() {
-    const [metaRes, cvRes] = await Promise.all([
+    const [metaRes, cvRes, reasonRes] = await Promise.all([
       fetch(`${API}/applications/${id}`),
       fetch(`${API}/applications/${id}/cv`),
+      fetch(`${API}/applications/${id}/reasoning`),
     ]);
     if (metaRes.ok) {
       const m = await metaRes.json();
@@ -235,10 +237,8 @@ export default function ApplicationPage() {
       setContent(c.content);
       setEdited(c.content);
     }
-    // Check if reasoning exists
-    const rRes = await fetch(`${API}/applications/${id}/reasoning`);
-    if (rRes.ok) {
-      const r = await rRes.json();
+    if (reasonRes.ok) {
+      const r = await reasonRes.json();
       setHasReasoning(r.has_reasoning);
       if (r.has_reasoning) setReasoning(r.content);
     }
@@ -291,7 +291,7 @@ export default function ApplicationPage() {
     "preview",
     "raw",
     ...(hasPdf ? (["pdf"] as ViewMode[]) : []),
-    ...(hasReasoning ? (["reasoning"] as ViewMode[]) : []),
+    "reasoning",
   ];
 
   return (
@@ -322,9 +322,9 @@ export default function ApplicationPage() {
           )}
           <button onClick={handleRender} disabled={rendering}
             className="px-3 py-1.5 text-xs font-medium bg-accent text-white rounded-lg hover:bg-accent-dim transition-colors disabled:opacity-50 flex items-center gap-1.5">
-            {rendering ? (
-              <><span className="w-3 h-3 border border-white/30 border-t-white rounded-full animate-spin" />Rendering…</>
-            ) : "Render PDF"}
+            {rendering
+              ? <><span className="w-3 h-3 border border-white/30 border-t-white rounded-full animate-spin" />Rendering…</>
+              : "Render PDF"}
           </button>
           {hasPdf && (
             <a href={`${API}/applications/${id}/pdf`} target="_blank" rel="noopener noreferrer"
@@ -370,7 +370,7 @@ export default function ApplicationPage() {
           <iframe src={`${API}/applications/${id}/pdf`} className="w-full h-[85vh]" title="CV PDF" />
         )}
         {view === "reasoning" && (
-          <ReasoningPanel content={reasoning} />
+          <ReasoningPanel content={reasoning} hasReasoning={hasReasoning} />
         )}
       </div>
     </div>
