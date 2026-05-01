@@ -19,6 +19,11 @@ PERSONAS_PATH   = CV_LIBRARY_PATH / "personas"
 SKILLS_PATH     = CV_LIBRARY_PATH / "skills" / "skills.md"
 META_PATH       = CV_LIBRARY_PATH / "meta" / "meta.md"
 
+# ── Database ───────────────────────────────────────────────────────────────────
+# SQLite — embedded, no server required.
+# Override in .env to point to a different location (e.g. on VPS).
+DB_PATH = os.getenv("DB_PATH", str(REPO_ROOT / "data" / "atat.db"))
+
 # ── LLM ───────────────────────────────────────────────────────────────────────
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "anthropic")
 LLM_MODEL    = os.getenv("LLM_MODEL",    "claude-sonnet-4-6")
@@ -27,27 +32,12 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 OPENAI_API_KEY    = os.getenv("OPENAI_API_KEY")
 
 # ── Model parameters ──────────────────────────────────────────────────────────
-# Temperature: lower = more factual, less hallucinatory.
-# Ignored when THINKING_BUDGET > 0 (Anthropic requires temperature=1 for thinking).
-TEMPERATURE = float(os.getenv("TEMPERATURE", "0.3"))
-
-# Max output tokens for the CV itself (not including thinking budget).
-MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS", "8192"))
-
-# Extended thinking budget in tokens (Anthropic only).
-# Gives the model dedicated reasoning capacity before producing output.
-# Set to 0 to disable. Recommended range: 5000–10000.
-THINKING_BUDGET = int(os.getenv("THINKING_BUDGET", "8000"))
-
-# Prompt caching: cache the stable system prompt to reduce cost and latency.
-# Up to 90% cost reduction on cached tokens on subsequent runs.
-ENABLE_CACHING = os.getenv("ENABLE_CACHING", "true").lower() == "true"
+TEMPERATURE       = float(os.getenv("TEMPERATURE",       "0.3"))
+MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS",   "8192"))
+THINKING_BUDGET   = int(os.getenv("THINKING_BUDGET",     "8000"))
+ENABLE_CACHING    = os.getenv("ENABLE_CACHING",  "true").lower() == "true"
 
 # ── Rendering ─────────────────────────────────────────────────────────────────
-# When true, automatically render cv.md → cv.pdf via Typst after generation.
-# Requires the 'typst' Python package (pip install typst).
-# Set to false to produce Markdown only — useful when you want to review
-# and edit the CV content before committing to a PDF.
 RENDER_PDF = os.getenv("RENDER_PDF", "true").lower() == "true"
 
 # ── Logging ───────────────────────────────────────────────────────────────────
