@@ -4,6 +4,9 @@
 # Output - never commit generated CVs or JDs
 output/
 
+# JD drop folder - may contain confidential job descriptions
+jds/
+
 # Database — local data, never committed
 data/
 
