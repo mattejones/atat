@@ -5,13 +5,18 @@ Pipeline:
   1. Read JD (file or text)
   2. Assemble full cv-library context (library FIRST, JD LAST)
   3. Optionally inject per-application generation notes before the JD
-  4. Call LLM with extended thinking — produces tailored CV Markdown
-  5. Write output folder (jd.txt, cv.md, run_meta.json)
-  6. Render cv.md → cv.pdf via Typst (if RENDER_PDF is enabled)
+  4. Call LLM — produces tailored CV Markdown
+  5. Extract reasoning if present in output (model misfired) — save to reasoning.md
+  6. Write output folder (jd.txt, cv.md, reasoning.md, run_meta.json)
+  7. Render cv.md → cv.pdf via Typst (if RENDER_PDF is enabled)
+
+Returns:
+  (output_dir, cv_markdown, reasoning) — reasoning is empty string if none captured
 """
 
 import json
 import logging
+import re
 from datetime import date
 from pathlib import Path
 from typing import Optional
@@ -67,11 +72,6 @@ def build_system_prompt() -> str:
 
 
 def assemble_user_message(jd_text: str, generation_notes: Optional[str] = None) -> str:
-    """
-    Build the user message: library context FIRST, JD LAST.
-    If generation_notes are provided, they are injected between the JD
-    and the library content — the model reads them just before the JD.
-    """
     notes_block = ""
     if generation_notes and generation_notes.strip():
         notes_block = f"""
@@ -86,40 +86,64 @@ def assemble_user_message(jd_text: str, generation_notes: Optional[str] = None) 
 """
 
     return f"""## META
-<!-- Contact info, constraints, DO NOT INCLUDE rules — apply all without exception -->
-
 {load_text(META_PATH)}
 
 ---
 
 ## PERSONAS
-<!-- Review all personas. You will select the best fit in your reasoning steps. -->
-
 {load_persona_files()}
 
 ---
 
 ## EXPERIENCE LIBRARY
-<!-- Full role history. Every claim in the CV must be sourced from this section. -->
-
 {load_experience_files()}
 
 ---
 
 ## SKILLS INVENTORY
-<!-- Use this to select skills to include. Do not add skills not present here. -->
-
 {load_text(SKILLS_PATH)}
 {notes_block}
 ---
 
 ## JOB DESCRIPTION
-<!-- Read this LAST. Use it to understand what to foreground — not as a template to mirror.
-     Do not introduce any term, technology, or concept from this section that is not
-     already present in the library above. -->
-
 {jd_text}
 """
+
+
+# ── Reasoning extraction ──────────────────────────────────────────────────────
+
+def extract_reasoning_and_cv(raw_output: str) -> tuple[str, str]:
+    """
+    Separate reasoning from CV in the LLM output.
+
+    When extended thinking is working correctly, the model outputs only the CV
+    and reasoning is empty. When it misfires (outputs reasoning as text), this
+    function detects the pattern and splits the output cleanly.
+
+    Detection: if the output contains "## STEP" headers before the first H1,
+    the content before the CV heading is reasoning.
+
+    Returns:
+        (reasoning, cv_markdown)
+    """
+    # Find the first top-level heading that looks like a name (# Firstname ...)
+    # This marks the start of the actual CV
+    cv_start_match = re.search(r'^# [A-Z][a-zA-Z]', raw_output, re.MULTILINE)
+
+    if cv_start_match and cv_start_match.start() > 0:
+        reasoning_candidate = raw_output[:cv_start_match.start()].strip()
+        cv_candidate        = raw_output[cv_start_match.start():].strip()
+
+        # Only treat as reasoning if it actually contains step content
+        if re.search(r'## STEP\s+\d', reasoning_candidate, re.IGNORECASE):
+            log.warning(
+                "Model output included reasoning as text — extracting and saving separately. "
+                "This indicates extended thinking may not be active."
+            )
+            return reasoning_candidate, cv_candidate
+
+    # Normal case: no reasoning in output
+    return "", raw_output.strip()
 
 
 # ── LLM Client ────────────────────────────────────────────────────────────────
@@ -142,7 +166,7 @@ def _call_anthropic(system: str, user: str) -> str:
         if ENABLE_CACHING else system
     )
 
-    extra_kwargs = {}
+    extra_kwargs: dict = {}
     if THINKING_BUDGET > 0:
         extra_kwargs["thinking"] = {"type": "enabled", "budget_tokens": THINKING_BUDGET}
         effective_temperature    = 1
@@ -161,11 +185,19 @@ def _call_anthropic(system: str, user: str) -> str:
         **extra_kwargs,
     )
 
+    # Capture extended thinking content if present (for future logging)
+    thinking_text = "".join(
+        block.thinking for block in message.content
+        if hasattr(block, 'thinking') and block.thinking
+    )
+    if thinking_text:
+        log.info(f"Extended thinking captured: {len(thinking_text)} chars")
+
     output_text = "".join(
         block.text for block in message.content if block.type == "text"
     )
     log.info(
-        f"Usage — input: {message.usage.input_tokens} tokens, "
+        f"Usage — input: {message.usage.input_tokens}, "
         f"output: {message.usage.output_tokens} tokens"
     )
     return output_text
@@ -196,7 +228,12 @@ def derive_output_name(jd_path: Path) -> tuple[str, str]:
     return stem, "unknown-role"
 
 
-def write_output(jd_path: Path, jd_text: str, cv_markdown: str) -> Path:
+def write_output(
+    jd_path:     Path,
+    jd_text:     str,
+    cv_markdown: str,
+    reasoning:   str = "",
+) -> Path:
     company, role = derive_output_name(jd_path)
     today         = date.today().isoformat()
     out_dir       = OUTPUT_PATH / f"{today}_{company}_{role}"
@@ -204,12 +241,22 @@ def write_output(jd_path: Path, jd_text: str, cv_markdown: str) -> Path:
 
     (out_dir / "jd.txt").write_text(jd_text,   encoding="utf-8")
     (out_dir / "cv.md").write_text(cv_markdown, encoding="utf-8")
+
+    if reasoning:
+        (out_dir / "reasoning.md").write_text(reasoning, encoding="utf-8")
+        log.info("Reasoning saved to reasoning.md")
+
     (out_dir / "run_meta.json").write_text(
         json.dumps({
-            "jd_file": jd_path.name, "model": LLM_MODEL, "provider": LLM_PROVIDER,
-            "temperature": TEMPERATURE, "thinking_budget": THINKING_BUDGET,
-            "caching": ENABLE_CACHING, "render_pdf": RENDER_PDF,
-            "generated_at": today,
+            "jd_file":         jd_path.name,
+            "model":           LLM_MODEL,
+            "provider":        LLM_PROVIDER,
+            "temperature":     TEMPERATURE,
+            "thinking_budget": THINKING_BUDGET,
+            "caching":         ENABLE_CACHING,
+            "render_pdf":      RENDER_PDF,
+            "generated_at":    today,
+            "has_reasoning":   bool(reasoning),
         }, indent=2),
         encoding="utf-8",
     )
@@ -219,13 +266,23 @@ def write_output(jd_path: Path, jd_text: str, cv_markdown: str) -> Path:
 
 # ── Entry Point ───────────────────────────────────────────────────────────────
 
-def process_jd(jd_path: Path, generation_notes: Optional[str] = None) -> Path:
+def process_jd(
+    jd_path:          Path,
+    generation_notes: Optional[str] = None,
+) -> tuple[Path, str, str]:
+    """
+    Full pipeline. Returns (output_dir, cv_markdown, reasoning).
+    reasoning is empty string when extended thinking worked correctly.
+    """
     log.info(f"Processing: {jd_path.name}")
-    jd_text     = jd_path.read_text(encoding="utf-8")
-    system      = build_system_prompt()
-    user        = assemble_user_message(jd_text, generation_notes)
-    cv_markdown = call_llm(system, user)
-    output_dir  = write_output(jd_path, jd_text, cv_markdown)
+    jd_text    = jd_path.read_text(encoding="utf-8")
+    system     = build_system_prompt()
+    user       = assemble_user_message(jd_text, generation_notes)
+    raw_output = call_llm(system, user)
+
+    reasoning, cv_markdown = extract_reasoning_and_cv(raw_output)
+
+    output_dir = write_output(jd_path, jd_text, cv_markdown, reasoning)
     log.info(f"CV Markdown: {output_dir / 'cv.md'}")
 
     if RENDER_PDF:
@@ -234,4 +291,5 @@ def process_jd(jd_path: Path, generation_notes: Optional[str] = None) -> Path:
             render_cv(output_dir / "cv.md", output_dir)
         except Exception as e:
             log.error(f"PDF rendering failed: {e}")
-    return output_dir
+
+    return output_dir, cv_markdown, reasoning

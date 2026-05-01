@@ -50,7 +50,7 @@ class ManualApplicationCreate(BaseModel):
     source_url:   Optional[str] = None
     status:       str           = "applied"
     notes:        Optional[str] = None
-    applied_date: Optional[str] = None  # YYYY-MM-DD
+    applied_date: Optional[str] = None
 
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -59,7 +59,6 @@ VALID_STATUSES = {
     "generated", "reviewing", "applied", "acknowledged",
     "interviewing", "offered", "rejected", "excluded", "archived",
 }
-
 VALID_TIERS        = {"T1", "T2", "T3", "EX1"}
 VALID_ARRANGEMENTS = {"remote", "hybrid", "office"}
 
@@ -104,33 +103,23 @@ def create_manual_application(
     body: ManualApplicationCreate,
     db: sqlite3.Connection = Depends(get_db),
 ):
-    """
-    Log an application that was submitted outside ATAT — no CV or JD required.
-    Creates a minimal DB record with the given metadata.
-    """
     if body.status not in VALID_STATUSES:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Invalid status. Must be one of: {sorted(VALID_STATUSES)}"
-        )
+        raise HTTPException(status_code=422, detail=f"Invalid status: {body.status}")
 
     today        = date.today().isoformat()
     company_slug = re.sub(r'[^a-z0-9]+', '-', body.company.lower())[:30].strip('-')
     role_slug    = re.sub(r'[^a-z0-9]+', '-', body.role.lower())[:40].strip('-')
     app_id       = f"{today}_{company_slug}_{role_slug}"
 
-    # Avoid collisions
     if db.execute("SELECT 1 FROM applications WHERE id = ?", (app_id,)).fetchone():
         app_id = f"{app_id}_{str(uuid.uuid4())[:6]}"
 
     now = datetime.now().isoformat()
     db.execute(
         """INSERT INTO applications
-           (id, company, role, source_url, status, notes,
-            has_pdf, created_at, updated_at)
+           (id, company, role, source_url, status, notes, has_pdf, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)""",
-        (app_id, body.company, body.role, body.source_url,
-         body.status, body.notes, now, now)
+        (app_id, body.company, body.role, body.source_url, body.status, body.notes, now, now)
     )
     db.execute(
         """INSERT INTO application_events
@@ -138,12 +127,9 @@ def create_manual_application(
            VALUES (?, 'status_change', ?, 'Application logged manually')""",
         (app_id, body.status)
     )
-
-    # Optionally record the applied date
     if body.applied_date and body.status in ("applied", "acknowledged", "interviewing", "offered", "rejected"):
         db.execute(
-            """INSERT INTO application_dates (application_id, date_type, date)
-               VALUES (?, 'applied', ?)""",
+            "INSERT INTO application_dates (application_id, date_type, date) VALUES (?, 'applied', ?)",
             (app_id, body.applied_date)
         )
 
@@ -263,7 +249,7 @@ def get_pdf(app_id: str, db: sqlite3.Connection = Depends(get_db)):
         from pipeline.parse_cv import parse_cv
         from pipeline.render import pdf_filename
         if row["cv_markdown"]:
-            cv = parse_cv(row["cv_markdown"])
+            cv            = parse_cv(row["cv_markdown"])
             download_name = pdf_filename(cv.name, row["company"] or "")
         else:
             download_name = f"{app_id}.pdf"
@@ -271,6 +257,26 @@ def get_pdf(app_id: str, db: sqlite3.Connection = Depends(get_db)):
         download_name = f"{app_id}.pdf"
 
     return FileResponse(path=str(pdf_path), media_type="application/pdf", filename=download_name)
+
+
+# ── Reasoning ─────────────────────────────────────────────────────────────────
+
+@router.get("/{app_id}/reasoning")
+def get_reasoning(app_id: str, db: sqlite3.Connection = Depends(get_db)):
+    """Get the LLM reasoning for an application, if captured."""
+    row = db.execute(
+        "SELECT reasoning, output_dir FROM applications WHERE id = ?", (app_id,)
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Application not found")
+
+    reasoning = row["reasoning"]
+    if not reasoning and row["output_dir"]:
+        r_path = Path(row["output_dir"]) / "reasoning.md"
+        if r_path.exists():
+            reasoning = r_path.read_text(encoding="utf-8")
+
+    return {"content": reasoning or "", "has_reasoning": bool(reasoning)}
 
 
 # ── Events ────────────────────────────────────────────────────────────────────

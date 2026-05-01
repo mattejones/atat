@@ -18,7 +18,7 @@ from pipeline.config import (
     OUTPUT_PATH, LLM_MODEL, LLM_PROVIDER,
     TEMPERATURE, THINKING_BUDGET, ENABLE_CACHING, RENDER_PDF,
 )
-from pipeline.tailorer import build_system_prompt, assemble_user_message, call_llm
+from pipeline.tailorer import build_system_prompt, assemble_user_message, call_llm, extract_reasoning_and_cv
 
 router = APIRouter(prefix="/generate", tags=["generate"])
 
@@ -29,12 +29,13 @@ class GenerateRequest(BaseModel):
     role:             str            = "Unknown Role"
     source_url:       Optional[str]  = None
     tier:             Optional[str]  = None
-    generation_notes: Optional[str]  = None   # per-application LLM guidance
+    generation_notes: Optional[str]  = None
 
 
 class GenerateResponse(BaseModel):
     app_id:      str
     cv_markdown: str
+    has_reasoning: bool = False
     status:      str = "generated"
 
 
@@ -63,19 +64,23 @@ def generate_cv(
     (out_dir / "jd.txt").write_text(request.jd_text, encoding="utf-8")
 
     try:
-        system      = build_system_prompt()
-        user        = assemble_user_message(request.jd_text, request.generation_notes)
-        cv_markdown = call_llm(system, user)
+        system     = build_system_prompt()
+        user       = assemble_user_message(request.jd_text, request.generation_notes)
+        raw_output = call_llm(system, user)
+        reasoning, cv_markdown = extract_reasoning_and_cv(raw_output)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"LLM generation failed: {e}")
 
     (out_dir / "cv.md").write_text(cv_markdown, encoding="utf-8")
+    if reasoning:
+        (out_dir / "reasoning.md").write_text(reasoning, encoding="utf-8")
 
     meta = {
         "jd_file": "pasted", "model": LLM_MODEL, "provider": LLM_PROVIDER,
         "temperature": TEMPERATURE, "thinking_budget": THINKING_BUDGET,
         "caching": ENABLE_CACHING, "render_pdf": RENDER_PDF,
         "generated_at": today, "status": "generated",
+        "has_reasoning": bool(reasoning),
     }
     (out_dir / "run_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
@@ -84,13 +89,13 @@ def generate_cv(
         """INSERT INTO applications
            (id, company, role, source_url, jd_text, cv_markdown,
             tier, status, output_dir, has_pdf, model, provider,
-            generation_notes, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'generated', ?, 0, ?, ?, ?, ?, ?)""",
+            generation_notes, reasoning, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'generated', ?, 0, ?, ?, ?, ?, ?, ?)""",
         (
             app_id, request.company, request.role, request.source_url,
             request.jd_text, cv_markdown, request.tier,
             str(out_dir), LLM_MODEL, LLM_PROVIDER,
-            request.generation_notes, now, now,
+            request.generation_notes, reasoning or None, now, now,
         )
     )
     db.execute(
@@ -100,4 +105,8 @@ def generate_cv(
         (app_id,)
     )
 
-    return GenerateResponse(app_id=app_id, cv_markdown=cv_markdown)
+    return GenerateResponse(
+        app_id=app_id,
+        cv_markdown=cv_markdown,
+        has_reasoning=bool(reasoning),
+    )

@@ -8,7 +8,7 @@ import remarkGfm from "remark-gfm";
 
 const API = process.env.NEXT_PUBLIC_API_URL;
 
-type ViewMode = "preview" | "raw" | "pdf";
+type ViewMode = "preview" | "raw" | "pdf" | "reasoning";
 
 const ARRANGEMENT_LABELS: Record<string, string> = {
   remote: "Remote",
@@ -21,9 +21,9 @@ const CURRENCIES = ["GBP", "USD", "EUR", "AUD", "CAD", "SGD"];
 // ── Role details panel ────────────────────────────────────────────────────────
 
 function RoleDetails({ meta, onSave }: { meta: any; onSave: (updates: any) => void }) {
-  const [editing, setEditing]   = useState(false);
-  const [saving, setSaving]     = useState(false);
-  const [form, setForm]         = useState({
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving]   = useState(false);
+  const [form, setForm]       = useState({
     location:         meta?.location         ?? "",
     work_arrangement: meta?.work_arrangement ?? "",
     hybrid_days:      meta?.hybrid_days      ?? "",
@@ -65,10 +65,7 @@ function RoleDetails({ meta, onSave }: { meta: any; onSave: (updates: any) => vo
       salary_max:       form.salary_max  !== "" ? parseInt(String(form.salary_max))  : null,
       salary_currency:  form.salary_currency  || "GBP",
     };
-    // Remove null values so PATCH only sends what changed
-    const cleaned = Object.fromEntries(
-      Object.entries(payload).filter(([, v]) => v !== null)
-    );
+    const cleaned = Object.fromEntries(Object.entries(payload).filter(([, v]) => v !== null));
     try {
       onSave(cleaned);
       setEditing(false);
@@ -77,36 +74,24 @@ function RoleDetails({ meta, onSave }: { meta: any; onSave: (updates: any) => vo
     }
   }
 
-  const salary     = salaryDisplay();
+  const salary      = salaryDisplay();
   const arrangement = arrangementDisplay();
-  const hasAny     = meta?.location || salary || arrangement;
+  const hasAny      = meta?.location || salary || arrangement;
 
   return (
     <div className="bg-bg-surface border border-bg-border rounded-xl px-5 py-4">
       <div className="flex items-center justify-between mb-3">
-        <h2 className="text-xs font-semibold text-text-muted uppercase tracking-wide">
-          Role details
-        </h2>
+        <h2 className="text-xs font-semibold text-text-muted uppercase tracking-wide">Role details</h2>
         {!editing ? (
-          <button
-            onClick={() => setEditing(true)}
-            className="text-xs text-text-muted hover:text-accent transition-colors"
-          >
+          <button onClick={() => setEditing(true)} className="text-xs text-text-muted hover:text-accent transition-colors">
             {hasAny ? "Edit" : "+ Add details"}
           </button>
         ) : (
           <div className="flex gap-2">
-            <button
-              onClick={save}
-              disabled={saving}
-              className="text-xs text-accent hover:underline disabled:opacity-50"
-            >
+            <button onClick={save} disabled={saving} className="text-xs text-accent hover:underline disabled:opacity-50">
               {saving ? "Saving…" : "Save"}
             </button>
-            <button
-              onClick={() => setEditing(false)}
-              className="text-xs text-text-muted hover:text-text-secondary"
-            >
+            <button onClick={() => setEditing(false)} className="text-xs text-text-muted hover:text-text-secondary">
               Cancel
             </button>
           </div>
@@ -115,67 +100,41 @@ function RoleDetails({ meta, onSave }: { meta: any; onSave: (updates: any) => vo
 
       {!editing ? (
         <div className="space-y-1.5">
-          {meta?.location && (
-            <Detail label="Location" value={meta.location} />
-          )}
-          {arrangement && (
-            <Detail label="Working" value={arrangement} />
-          )}
-          {salary && (
-            <Detail label="Salary" value={salary} />
-          )}
-          {!hasAny && (
-            <p className="text-xs text-text-muted italic">No role details recorded yet.</p>
-          )}
+          {meta?.location   && <Detail label="Location" value={meta.location} />}
+          {arrangement      && <Detail label="Working"  value={arrangement} />}
+          {salary           && <Detail label="Salary"   value={salary} />}
+          {!hasAny && <p className="text-xs text-text-muted italic">No role details recorded yet.</p>}
         </div>
       ) : (
         <div className="space-y-3">
-          {/* Location */}
           <div className="grid grid-cols-3 gap-2 items-center">
             <label className="text-xs text-text-secondary">Location</label>
-            <input
-              value={form.location}
-              onChange={(e) => setForm((f) => ({ ...f, location: e.target.value }))}
+            <input value={form.location} onChange={(e) => setForm((f) => ({ ...f, location: e.target.value }))}
               placeholder="e.g. London, UK"
-              className="col-span-2 px-2 py-1.5 text-sm bg-white border border-bg-border rounded-md focus:outline-none focus:ring-1 focus:ring-accent/50"
-            />
+              className="col-span-2 px-2 py-1.5 text-sm bg-white border border-bg-border rounded-md focus:outline-none focus:ring-1 focus:ring-accent/50" />
           </div>
-
-          {/* Work arrangement */}
           <div className="grid grid-cols-3 gap-2 items-center">
             <label className="text-xs text-text-secondary">Working</label>
             <div className="col-span-2 flex gap-1.5">
               {(["remote", "hybrid", "office"] as const).map((a) => (
-                <button
-                  key={a}
-                  onClick={() => setForm((f) => ({ ...f, work_arrangement: a }))}
+                <button key={a} onClick={() => setForm((f) => ({ ...f, work_arrangement: a }))}
                   className={`px-3 py-1 text-xs rounded-full border transition-colors capitalize ${
-                    form.work_arrangement === a
-                      ? "bg-accent text-white border-accent"
-                      : "border-bg-border text-text-secondary hover:border-accent/50"
-                  }`}
-                >
+                    form.work_arrangement === a ? "bg-accent text-white border-accent" : "border-bg-border text-text-secondary hover:border-accent/50"
+                  }`}>
                   {ARRANGEMENT_LABELS[a]}
                 </button>
               ))}
             </div>
           </div>
-
-          {/* Hybrid days — only shown if hybrid */}
           {form.work_arrangement === "hybrid" && (
             <div className="grid grid-cols-3 gap-2 items-center">
               <label className="text-xs text-text-secondary">Days in office</label>
               <div className="col-span-2 flex gap-1.5">
-                {[1, 2, 3, 4, 5].map((d) => (
-                  <button
-                    key={d}
-                    onClick={() => setForm((f) => ({ ...f, hybrid_days: d }))}
+                {[1,2,3,4,5].map((d) => (
+                  <button key={d} onClick={() => setForm((f) => ({ ...f, hybrid_days: d }))}
                     className={`w-8 h-7 text-xs rounded-md border transition-colors ${
-                      Number(form.hybrid_days) === d
-                        ? "bg-accent text-white border-accent"
-                        : "border-bg-border text-text-secondary hover:border-accent/50"
-                    }`}
-                  >
+                      Number(form.hybrid_days) === d ? "bg-accent text-white border-accent" : "border-bg-border text-text-secondary hover:border-accent/50"
+                    }`}>
                     {d}
                   </button>
                 ))}
@@ -183,35 +142,18 @@ function RoleDetails({ meta, onSave }: { meta: any; onSave: (updates: any) => vo
               </div>
             </div>
           )}
-
-          {/* Salary */}
           <div className="grid grid-cols-3 gap-2 items-center">
             <label className="text-xs text-text-secondary">Salary</label>
             <div className="col-span-2 flex gap-2 items-center">
-              <select
-                value={form.salary_currency}
-                onChange={(e) => setForm((f) => ({ ...f, salary_currency: e.target.value }))}
-                className="px-2 py-1.5 text-xs bg-white border border-bg-border rounded-md focus:outline-none focus:ring-1 focus:ring-accent/50"
-              >
-                {CURRENCIES.map((c) => (
-                  <option key={c} value={c}>{c}</option>
-                ))}
+              <select value={form.salary_currency} onChange={(e) => setForm((f) => ({ ...f, salary_currency: e.target.value }))}
+                className="px-2 py-1.5 text-xs bg-white border border-bg-border rounded-md focus:outline-none">
+                {CURRENCIES.map((c) => <option key={c} value={c}>{c}</option>)}
               </select>
-              <input
-                type="number"
-                value={form.salary_min}
-                onChange={(e) => setForm((f) => ({ ...f, salary_min: e.target.value }))}
-                placeholder="Min"
-                className="w-28 px-2 py-1.5 text-sm bg-white border border-bg-border rounded-md focus:outline-none focus:ring-1 focus:ring-accent/50"
-              />
+              <input type="number" value={form.salary_min} onChange={(e) => setForm((f) => ({ ...f, salary_min: e.target.value }))}
+                placeholder="Min" className="w-28 px-2 py-1.5 text-sm bg-white border border-bg-border rounded-md focus:outline-none" />
               <span className="text-xs text-text-muted">–</span>
-              <input
-                type="number"
-                value={form.salary_max}
-                onChange={(e) => setForm((f) => ({ ...f, salary_max: e.target.value }))}
-                placeholder="Max"
-                className="w-28 px-2 py-1.5 text-sm bg-white border border-bg-border rounded-md focus:outline-none focus:ring-1 focus:ring-accent/50"
-              />
+              <input type="number" value={form.salary_max} onChange={(e) => setForm((f) => ({ ...f, salary_max: e.target.value }))}
+                placeholder="Max" className="w-28 px-2 py-1.5 text-sm bg-white border border-bg-border rounded-md focus:outline-none" />
             </div>
           </div>
         </div>
@@ -229,6 +171,33 @@ function Detail({ label, value }: { label: string; value: string }) {
   );
 }
 
+// ── Reasoning panel ───────────────────────────────────────────────────────────
+
+function ReasoningPanel({ content }: { content: string }) {
+  if (!content) return (
+    <div className="bg-bg-elevated p-8 text-center text-text-muted text-sm min-h-[40vh] flex items-center justify-center">
+      <div>
+        <p className="font-medium mb-1">No reasoning captured</p>
+        <p className="text-xs">
+          Reasoning is captured when the model outputs its chain-of-thought as text.
+          With extended thinking enabled, reasoning happens internally and is not visible here.
+        </p>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="bg-bg-elevated p-8 min-h-[60vh] space-y-4">
+      <div className="flex items-center gap-2 pb-3 border-b border-bg-border">
+        <span className="text-xs font-semibold text-accent uppercase tracking-wide">Model reasoning</span>
+        <span className="text-xs text-text-muted">— captured at generation time</span>
+      </div>
+      <div className="prose-cv max-w-none">
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+      </div>
+    </div>
+  );
+}
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
@@ -236,15 +205,18 @@ export default function ApplicationPage() {
   const params = useParams();
   const id     = params.id as string;
 
-  const [meta, setMeta]           = useState<any>(null);
-  const [content, setContent]     = useState("");
-  const [edited, setEdited]       = useState("");
-  const [view, setView]           = useState<ViewMode>("preview");
-  const [dirty, setDirty]         = useState(false);
-  const [saving, setSaving]       = useState(false);
-  const [rendering, setRendering] = useState(false);
-  const [hasPdf, setHasPdf]       = useState(false);
-  const [error, setError]         = useState<string | null>(null);
+  const [meta, setMeta]               = useState<any>(null);
+  const [content, setContent]         = useState("");
+  const [edited, setEdited]           = useState("");
+  const [reasoning, setReasoning]     = useState<string>("");
+  const [view, setView]               = useState<ViewMode>("preview");
+  const [dirty, setDirty]             = useState(false);
+  const [saving, setSaving]           = useState(false);
+  const [rendering, setRendering]     = useState(false);
+  const [loadingReason, setLoadingReason] = useState(false);
+  const [hasPdf, setHasPdf]           = useState(false);
+  const [hasReasoning, setHasReasoning] = useState(false);
+  const [error, setError]             = useState<string | null>(null);
 
   useEffect(() => { loadData(); }, [id]);
 
@@ -262,6 +234,13 @@ export default function ApplicationPage() {
       const c = await cvRes.json();
       setContent(c.content);
       setEdited(c.content);
+    }
+    // Check if reasoning exists
+    const rRes = await fetch(`${API}/applications/${id}/reasoning`);
+    if (rRes.ok) {
+      const r = await rRes.json();
+      setHasReasoning(r.has_reasoning);
+      if (r.has_reasoning) setReasoning(r.content);
     }
   }
 
@@ -305,13 +284,15 @@ export default function ApplicationPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(updates),
     });
-    if (res.ok) {
-      const updated = await res.json();
-      setMeta(updated);
-    }
+    if (res.ok) setMeta(await res.json());
   }
 
-  const views: ViewMode[] = ["preview", "raw", ...(hasPdf ? (["pdf"] as ViewMode[]) : [])];
+  const views: ViewMode[] = [
+    "preview",
+    "raw",
+    ...(hasPdf ? (["pdf"] as ViewMode[]) : []),
+    ...(hasReasoning ? (["reasoning"] as ViewMode[]) : []),
+  ];
 
   return (
     <div className="space-y-6">
@@ -325,9 +306,7 @@ export default function ApplicationPage() {
           </div>
           <h1 className="text-xl font-semibold text-text-primary">
             {meta?.company || "Application"}
-            {meta?.role && (
-              <span className="font-normal text-text-secondary ml-2">— {meta.role}</span>
-            )}
+            {meta?.role && <span className="font-normal text-text-secondary ml-2">— {meta.role}</span>}
           </h1>
           {meta?.generated_at && (
             <p className="text-xs text-text-muted mt-0.5">Generated {meta.generated_at}</p>
@@ -336,33 +315,20 @@ export default function ApplicationPage() {
 
         <div className="flex items-center gap-2 flex-shrink-0">
           {dirty && (
-            <button
-              onClick={handleSave}
-              disabled={saving}
-              className="px-3 py-1.5 text-xs font-medium border border-accent text-accent rounded-lg hover:bg-accent/10 transition-colors disabled:opacity-50"
-            >
+            <button onClick={handleSave} disabled={saving}
+              className="px-3 py-1.5 text-xs font-medium border border-accent text-accent rounded-lg hover:bg-accent/10 transition-colors disabled:opacity-50">
               {saving ? "Saving…" : "Save changes"}
             </button>
           )}
-          <button
-            onClick={handleRender}
-            disabled={rendering}
-            className="px-3 py-1.5 text-xs font-medium bg-accent text-white rounded-lg hover:bg-accent-dim transition-colors disabled:opacity-50 flex items-center gap-1.5"
-          >
+          <button onClick={handleRender} disabled={rendering}
+            className="px-3 py-1.5 text-xs font-medium bg-accent text-white rounded-lg hover:bg-accent-dim transition-colors disabled:opacity-50 flex items-center gap-1.5">
             {rendering ? (
-              <>
-                <span className="w-3 h-3 border border-white/30 border-t-white rounded-full animate-spin" />
-                Rendering…
-              </>
+              <><span className="w-3 h-3 border border-white/30 border-t-white rounded-full animate-spin" />Rendering…</>
             ) : "Render PDF"}
           </button>
           {hasPdf && (
-            <a
-              href={`${API}/applications/${id}/pdf`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="px-3 py-1.5 text-xs font-medium bg-bg-elevated border border-bg-border text-text-secondary rounded-lg hover:text-text-primary transition-colors"
-            >
+            <a href={`${API}/applications/${id}/pdf`} target="_blank" rel="noopener noreferrer"
+              className="px-3 py-1.5 text-xs font-medium bg-bg-elevated border border-bg-border text-text-secondary rounded-lg hover:text-text-primary transition-colors">
               Download PDF
             </a>
           )}
@@ -370,29 +336,19 @@ export default function ApplicationPage() {
       </div>
 
       {error && (
-        <div className="px-4 py-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
-          {error}
-        </div>
+        <div className="px-4 py-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">{error}</div>
       )}
 
-      {/* Role details panel */}
-      {meta && (
-        <RoleDetails meta={meta} onSave={handleRoleDetailsSave} />
-      )}
+      {meta && <RoleDetails meta={meta} onSave={handleRoleDetailsSave} />}
 
       {/* View toggle */}
       <div className="flex gap-1 bg-bg-surface rounded-lg p-1 w-fit border border-bg-border">
         {views.map((v) => (
-          <button
-            key={v}
-            onClick={() => setView(v)}
+          <button key={v} onClick={() => setView(v)}
             className={`px-3 py-1 text-xs font-medium rounded-md capitalize transition-colors ${
-              view === v
-                ? "bg-white text-text-primary shadow-sm"
-                : "text-text-secondary hover:text-text-primary"
-            }`}
-          >
-            {v}
+              view === v ? "bg-white text-text-primary shadow-sm" : "text-text-secondary hover:text-text-primary"
+            }`}>
+            {v === "reasoning" ? "🧠 Reasoning" : v}
           </button>
         ))}
       </div>
@@ -405,19 +361,16 @@ export default function ApplicationPage() {
           </div>
         )}
         {view === "raw" && (
-          <textarea
-            value={edited}
+          <textarea value={edited}
             onChange={(e) => { setEdited(e.target.value); setDirty(e.target.value !== content); }}
             className="w-full h-[70vh] p-6 font-mono text-xs text-text-primary bg-bg-elevated resize-none focus:outline-none leading-relaxed"
-            spellCheck={false}
-          />
+            spellCheck={false} />
         )}
         {view === "pdf" && hasPdf && (
-          <iframe
-            src={`${API}/applications/${id}/pdf`}
-            className="w-full h-[85vh]"
-            title="CV PDF"
-          />
+          <iframe src={`${API}/applications/${id}/pdf`} className="w-full h-[85vh]" title="CV PDF" />
+        )}
+        {view === "reasoning" && (
+          <ReasoningPanel content={reasoning} />
         )}
       </div>
     </div>
