@@ -1,6 +1,9 @@
 """
 generate.py — Route for triggering CV generation from a pasted JD.
 Writes to both the database and the filesystem output folder.
+
+call_llm() now returns a structured dict via tool use — no text parsing.
+reasoning is extracted from cv_data['reasoning'] before Markdown conversion.
 """
 
 import json
@@ -18,25 +21,30 @@ from pipeline.config import (
     OUTPUT_PATH, LLM_MODEL, LLM_PROVIDER,
     TEMPERATURE, THINKING_BUDGET, ENABLE_CACHING, RENDER_PDF,
 )
-from pipeline.tailorer import build_system_prompt, assemble_user_message, call_llm, extract_reasoning_and_cv
+from pipeline.tailorer import (
+    build_system_prompt,
+    assemble_user_message,
+    call_llm,
+    cv_to_markdown,
+)
 
 router = APIRouter(prefix="/generate", tags=["generate"])
 
 
 class GenerateRequest(BaseModel):
     jd_text:          str
-    company:          str            = "Unknown"
-    role:             str            = "Unknown Role"
-    source_url:       Optional[str]  = None
-    tier:             Optional[str]  = None
-    generation_notes: Optional[str]  = None
+    company:          str           = "Unknown"
+    role:             str           = "Unknown Role"
+    source_url:       Optional[str] = None
+    tier:             Optional[str] = None
+    generation_notes: Optional[str] = None
 
 
 class GenerateResponse(BaseModel):
-    app_id:      str
-    cv_markdown: str
+    app_id:        str
+    cv_markdown:   str
     has_reasoning: bool = False
-    status:      str = "generated"
+    status:        str  = "generated"
 
 
 @router.post("", response_model=GenerateResponse)
@@ -64,23 +72,31 @@ def generate_cv(
     (out_dir / "jd.txt").write_text(request.jd_text, encoding="utf-8")
 
     try:
-        system     = build_system_prompt()
-        user       = assemble_user_message(request.jd_text, request.generation_notes)
-        raw_output = call_llm(system, user)
-        reasoning, cv_markdown = extract_reasoning_and_cv(raw_output)
+        system  = build_system_prompt()
+        user    = assemble_user_message(request.jd_text, request.generation_notes)
+        cv_data = call_llm(system, user)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"LLM generation failed: {e}")
+
+    # Extract reasoning before converting to Markdown
+    reasoning   = cv_data.pop("reasoning", "")
+    cv_markdown = cv_to_markdown(cv_data)
 
     (out_dir / "cv.md").write_text(cv_markdown, encoding="utf-8")
     if reasoning:
         (out_dir / "reasoning.md").write_text(reasoning, encoding="utf-8")
 
     meta = {
-        "jd_file": "pasted", "model": LLM_MODEL, "provider": LLM_PROVIDER,
-        "temperature": TEMPERATURE, "thinking_budget": THINKING_BUDGET,
-        "caching": ENABLE_CACHING, "render_pdf": RENDER_PDF,
-        "generated_at": today, "status": "generated",
-        "has_reasoning": bool(reasoning),
+        "jd_file":         "pasted",
+        "model":           LLM_MODEL,
+        "provider":        LLM_PROVIDER,
+        "temperature":     TEMPERATURE,
+        "thinking_budget": THINKING_BUDGET,
+        "caching":         ENABLE_CACHING,
+        "render_pdf":      RENDER_PDF,
+        "generated_at":    today,
+        "status":          "generated",
+        "has_reasoning":   bool(reasoning),
     }
     (out_dir / "run_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
@@ -101,7 +117,7 @@ def generate_cv(
     db.execute(
         """INSERT INTO application_events
            (application_id, event_type, to_status, detail)
-           VALUES (?, 'status_change', 'generated', 'CV generated')""",
+           VALUES (?, 'status_change', 'generated', 'CV generated via tool use')""",
         (app_id,)
     )
 

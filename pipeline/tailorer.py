@@ -1,17 +1,16 @@
 """
-tailorer.py — Assembles cv-library context, calls the LLM, and renders to PDF.
+tailorer.py — Assembles cv-library context, calls the LLM, returns structured CV data.
 
 Pipeline:
-  1. Read JD (file or text)
-  2. Assemble full cv-library context (library FIRST, JD LAST)
-  3. Optionally inject per-application generation notes before the JD
-  4. Call LLM — produces output with ---BEGIN_CV--- sentinel separating reasoning from CV
-  5. Extract reasoning and CV cleanly on the sentinel
-  6. Write output folder (jd.txt, cv.md, reasoning.md if present, run_meta.json)
-  7. Render cv.md to cv.pdf via Typst (if RENDER_PDF is enabled)
+  1. Assemble library context (META, PERSONAS, EXPERIENCE, SKILLS) + JD
+  2. Call LLM — model outputs a JSON object as text (with optional extended thinking)
+  3. Parse and validate JSON — raise immediately on failure, no silent fallback
+  4. Convert dict -> canonical Markdown (cv_to_markdown) and ParsedCV (cv_data_to_parsed)
+  5. Write output folder: jd.txt, cv.md, reasoning.md (if present), run_meta.json
+  6. Render cv.md -> cv.pdf via Typst (if RENDER_PDF is enabled)
 
-Returns:
-  (output_dir, cv_markdown, reasoning)
+call_llm() returns a validated dict.
+Callers extract reasoning and pass remaining data to cv_to_markdown() / cv_data_to_parsed().
 """
 
 import json
@@ -27,13 +26,18 @@ from pipeline.config import (
     ANTHROPIC_API_KEY, OPENAI_API_KEY, TEMPERATURE,
     MAX_OUTPUT_TOKENS, THINKING_BUDGET, ENABLE_CACHING, RENDER_PDF,
 )
+from pipeline.parse_cv import ParsedCV, ExperienceEntry, EducationEntry
 
 log = logging.getLogger(__name__)
 
-CV_SENTINEL = "---BEGIN_CV---"
+# Required top-level fields in the JSON response
+_REQUIRED_FIELDS = {
+    "reasoning", "name", "contact", "profile",
+    "experience", "skills", "education", "certifications",
+}
 
 
-# ── Library Loaders ───────────────────────────────────────────────────────────
+# ── Library loaders ───────────────────────────────────────────────────────────
 
 def load_text(path: Path) -> str:
     if path.exists():
@@ -81,12 +85,11 @@ def assemble_user_message(jd_text: str, generation_notes: Optional[str] = None) 
 
 ## APPLICANT NOTES FOR THIS APPLICATION
 <!-- Personal guidance from the applicant about this specific role.
-     Apply these instructions with the same weight as PERSONAL ADDITIONS.
-     These notes are not for inclusion in the CV — they are guidance only. -->
+     Apply with equal weight to PERSONAL ADDITIONS.
+     Do not include in the CV itself. -->
 
 {generation_notes.strip()}
 """
-
     return f"""## META
 {load_text(META_PATH)}
 
@@ -112,55 +115,61 @@ def assemble_user_message(jd_text: str, generation_notes: Optional[str] = None) 
 """
 
 
-# ── Sentinel-based extraction ─────────────────────────────────────────────────
+# ── JSON parsing and validation ───────────────────────────────────────────────
 
-def extract_reasoning_and_cv(raw_output: str) -> tuple[str, str]:
+def parse_llm_response(raw: str) -> dict:
     """
-    Split LLM output into reasoning and CV using the ---BEGIN_CV--- sentinel.
-
-    The prompt instructs the model to always output the sentinel immediately
-    before the CV. Everything before it is reasoning; everything after is CV.
-
-    Falls back to heuristic (first # Name heading) if sentinel is absent.
-
-    Returns:
-        (reasoning, cv_markdown) — reasoning is empty string when none present.
+    Parse and validate the model's JSON text response.
+    Strips markdown code fences if present.
+    Raises ValueError immediately on parse failure or missing required fields.
+    No silent fallback — caller decides what to do on error.
     """
-    if CV_SENTINEL in raw_output:
-        parts     = raw_output.split(CV_SENTINEL, 1)
-        reasoning = parts[0].strip()
-        cv        = parts[1].strip()
-        if reasoning:
-            log.info(f"Reasoning captured via sentinel: {len(reasoning)} chars")
-        return reasoning, cv
+    # Strip markdown code fences: ```json ... ``` or ``` ... ```
+    cleaned = re.sub(r'^```(?:json)?\s*', '', raw.strip(), flags=re.IGNORECASE)
+    cleaned = re.sub(r'\s*```$', '', cleaned)
+    cleaned = cleaned.strip()
 
-    # Fallback: sentinel absent — try to find first # Name heading
-    cv_start = re.search(r'^# [A-Z]', raw_output, re.MULTILINE)
-    if cv_start and cv_start.start() > 0:
-        reasoning_candidate = raw_output[:cv_start.start()].strip()
-        cv_candidate        = raw_output[cv_start.start():].strip()
-        if reasoning_candidate:
-            log.warning(
-                "Model omitted ---BEGIN_CV--- sentinel — using heuristic split. "
-                f"Reasoning: {len(reasoning_candidate)} chars"
-            )
-            return reasoning_candidate, cv_candidate
+    try:
+        data = json.loads(cleaned)
+    except json.JSONDecodeError as e:
+        raise ValueError(
+            f"Model returned invalid JSON: {e}\n"
+            f"First 300 chars of response: {cleaned[:300]}"
+        )
 
-    return "", raw_output.strip()
+    if not isinstance(data, dict):
+        raise ValueError(f"Expected JSON object, got {type(data).__name__}")
+
+    missing = _REQUIRED_FIELDS - data.keys()
+    if missing:
+        raise ValueError(f"JSON response missing required fields: {sorted(missing)}")
+
+    return data
 
 
-# ── LLM Client ────────────────────────────────────────────────────────────────
+# ── LLM clients ───────────────────────────────────────────────────────────────
 
-def call_llm(system: str, user: str) -> str:
+def call_llm(system: str, user: str) -> dict:
+    """
+    Call the configured LLM. Model outputs a JSON object as text.
+    Returns the parsed and validated dict.
+    Raises ValueError on parse/validation failure.
+    """
     if LLM_PROVIDER == "anthropic":
-        return _call_anthropic(system, user)
+        raw = _call_anthropic(system, user)
     elif LLM_PROVIDER == "openai":
-        return _call_openai(system, user)
+        raw = _call_openai(system, user)
     else:
-        raise ValueError(f"Unknown LLM_PROVIDER: {LLM_PROVIDER}")
+        raise ValueError(f"Unknown LLM_PROVIDER: {LLM_PROVIDER!r}")
+
+    return parse_llm_response(raw)
 
 
 def _call_anthropic(system: str, user: str) -> str:
+    """
+    Anthropic: returns raw text. Extended thinking supported.
+    Model is instructed via the prompt to output a single JSON object.
+    """
     import anthropic
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -172,7 +181,7 @@ def _call_anthropic(system: str, user: str) -> str:
     extra_kwargs: dict = {}
     if THINKING_BUDGET > 0:
         extra_kwargs["thinking"] = {"type": "enabled", "budget_tokens": THINKING_BUDGET}
-        effective_temperature    = 1
+        effective_temperature    = 1  # required for extended thinking
         log.info(f"Extended thinking enabled — budget: {THINKING_BUDGET} tokens")
     else:
         effective_temperature = TEMPERATURE
@@ -188,26 +197,27 @@ def _call_anthropic(system: str, user: str) -> str:
         **extra_kwargs,
     )
 
-    thinking_text = "".join(
-        block.thinking for block in message.content
-        if hasattr(block, 'thinking') and block.thinking
-    )
-    if thinking_text:
-        log.info(f"Extended thinking captured internally: {len(thinking_text)} chars")
-
-    output_text = "".join(
-        block.text for block in message.content if block.type == "text"
-    )
     log.info(
         f"Usage — input: {message.usage.input_tokens}, "
         f"output: {message.usage.output_tokens} tokens"
     )
-    return output_text
+
+    # Collect text blocks only (skip thinking blocks)
+    text = "".join(
+        block.text for block in message.content
+        if block.type == "text"
+    )
+
+    if not text.strip():
+        raise ValueError("Model returned no text content.")
+
+    return text
 
 
 def _call_openai(system: str, user: str) -> str:
     from openai import OpenAI
-    client   = OpenAI(api_key=OPENAI_API_KEY)
+    client = OpenAI(api_key=OPENAI_API_KEY)
+
     response = client.chat.completions.create(
         model=LLM_MODEL,
         temperature=TEMPERATURE,
@@ -216,11 +226,127 @@ def _call_openai(system: str, user: str) -> str:
             {"role": "user",   "content": user},
         ],
         max_tokens=MAX_OUTPUT_TOKENS,
+        response_format={"type": "json_object"},
     )
+
     return response.choices[0].message.content
 
 
-# ── Output Writer ─────────────────────────────────────────────────────────────
+# ── Structured -> Markdown ────────────────────────────────────────────────────
+
+def cv_to_markdown(cv_data: dict) -> str:
+    """
+    Convert structured CV dict to canonical Markdown.
+    Format is controlled entirely by us — not the model.
+    parse_cv.py is only used when re-rendering user-edited cv.md files.
+    """
+    lines = []
+
+    lines.append(f"# {cv_data.get('name', '')}")
+    contact = cv_data.get('contact', {})
+    contact_parts = [
+        contact.get('email', ''),
+        contact.get('phone', ''),
+        contact.get('location', ''),
+        contact.get('linkedin', ''),
+    ]
+    lines.append(' · '.join(p for p in contact_parts if p))
+    lines += ['', '---', '']
+
+    lines += ['## Profile', '', cv_data.get('profile', ''), '', '---', '']
+
+    lines += ['## Experience', '']
+    for exp in cv_data.get('experience', []):
+        lines.append(
+            f"### {exp.get('company', '')} — {exp.get('role', '')} | {exp.get('dates', '')}"
+        )
+        lines.append('')
+        if exp.get('context'):
+            lines.append(f"*{exp['context']}*")
+            lines.append('')
+        for bullet in exp.get('bullets', []):
+            lines.append(f"- {bullet}")
+        lines += ['', '---', '']
+
+    earlier = cv_data.get('earlier_experience', '')
+    if earlier:
+        lines += ['### Earlier technical experience', '', earlier, '', '---', '']
+
+    lines += ['## Skills', '']
+    for skill in cv_data.get('skills', []):
+        lines.append(f"**{skill.get('category', '')}:** {skill.get('items', '')}")
+    lines += ['', '---', '']
+
+    lines += ['## Education', '']
+    for edu in cv_data.get('education', []):
+        lines.append(
+            f"**{edu.get('degree', '')}** — {edu.get('institution', '')}, {edu.get('years', '')}"
+        )
+        if edu.get('subjects'):
+            lines.append(f"*{edu['subjects']}*")
+        lines.append('')
+    lines += ['---', '']
+
+    lines += ['## Certifications', '']
+    for cert in cv_data.get('certifications', []):
+        lines.append(f"- {cert}")
+
+    return '\n'.join(lines)
+
+
+# ── Structured -> ParsedCV (for render.py) ────────────────────────────────────
+
+def cv_data_to_parsed(cv_data: dict) -> ParsedCV:
+    """Convert CV dict to ParsedCV for Typst rendering."""
+    contact = cv_data.get('contact', {})
+    contact_str = ' · '.join(filter(None, [
+        contact.get('email', ''),
+        contact.get('phone', ''),
+        contact.get('location', ''),
+        contact.get('linkedin', ''),
+    ]))
+
+    experience: list[ExperienceEntry] = []
+    for e in cv_data.get('experience', []):
+        experience.append(ExperienceEntry(
+            company=e.get('company', ''),
+            role=e.get('role', ''),
+            dates=e.get('dates', ''),
+            context=e.get('context'),
+            bullets=e.get('bullets', []),
+        ))
+
+    earlier = cv_data.get('earlier_experience', '')
+    if earlier:
+        experience.append(ExperienceEntry(
+            company='Earlier technical experience',
+            role='', dates='', context=None,
+            bullets=[earlier],
+        ))
+
+    return ParsedCV(
+        name=cv_data.get('name', ''),
+        contact=contact_str,
+        profile=cv_data.get('profile', ''),
+        experience=experience,
+        skills=[
+            (s.get('category', ''), s.get('items', ''))
+            for s in cv_data.get('skills', [])
+        ],
+        education=[
+            EducationEntry(
+                degree=e.get('degree', ''),
+                institution=e.get('institution', ''),
+                years=e.get('years', ''),
+                subjects=e.get('subjects'),
+            )
+            for e in cv_data.get('education', [])
+        ],
+        certifications=cv_data.get('certifications', []),
+    )
+
+
+# ── Output writer ─────────────────────────────────────────────────────────────
 
 def derive_output_name(jd_path: Path) -> tuple[str, str]:
     stem  = jd_path.stem.lower().replace(" ", "-")
@@ -266,25 +392,23 @@ def write_output(
     return out_dir
 
 
-# ── Entry Point ───────────────────────────────────────────────────────────────
+# ── Entry point ───────────────────────────────────────────────────────────────
 
 def process_jd(
     jd_path:          Path,
     generation_notes: Optional[str] = None,
 ) -> tuple[Path, str, str]:
-    """
-    Full pipeline. Returns (output_dir, cv_markdown, reasoning).
-    reasoning is empty string when extended thinking worked correctly.
-    """
+    """Full pipeline. Returns (output_dir, cv_markdown, reasoning)."""
     log.info(f"Processing: {jd_path.name}")
-    jd_text    = jd_path.read_text(encoding="utf-8")
-    system     = build_system_prompt()
-    user       = assemble_user_message(jd_text, generation_notes)
-    raw_output = call_llm(system, user)
+    jd_text = jd_path.read_text(encoding="utf-8")
+    system  = build_system_prompt()
+    user    = assemble_user_message(jd_text, generation_notes)
 
-    reasoning, cv_markdown = extract_reasoning_and_cv(raw_output)
+    cv_data   = call_llm(system, user)
+    reasoning = cv_data.pop("reasoning", "")
 
-    output_dir = write_output(jd_path, jd_text, cv_markdown, reasoning)
+    cv_markdown = cv_to_markdown(cv_data)
+    output_dir  = write_output(jd_path, jd_text, cv_markdown, reasoning)
     log.info(f"CV Markdown: {output_dir / 'cv.md'}")
 
     if RENDER_PDF:
