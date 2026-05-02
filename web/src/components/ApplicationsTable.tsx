@@ -1,7 +1,7 @@
 "use client";
 
 import {
-  useState, useRef, useEffect, useCallback,
+  useState, useRef, useEffect, useCallback, useMemo,
 } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
@@ -32,19 +32,24 @@ const STATUS_STYLES: Record<string, string> = {
   archived:     "bg-gray-50 text-gray-400 border border-gray-200",
 };
 
+type SortKey = "applied_date" | "company" | "role" | "status";
+type SortDir = "asc" | "desc";
+
 interface Application {
-  id:         string;
-  created_at: string;
-  company:    string;
-  role:       string;
-  has_pdf:    boolean;
-  status:     string;
+  id:           string;
+  created_at:   string;
+  applied_date: string | null;
+  company:      string;
+  role:         string;
+  has_pdf:      boolean;
+  status:       string;
 }
 
 interface EditState {
-  id:      string;
-  company: string;
-  role:    string;
+  id:           string;
+  company:      string;
+  role:         string;
+  applied_date: string;
 }
 
 // ── Portal dropdown hook ───────────────────────────────────────────────────────
@@ -91,7 +96,7 @@ function StatusDropdown({
   app: Application;
   onUpdate: (id: string, status: string) => void;
 }) {
-  const [loading, setLoading]      = useState(false);
+  const [loading, setLoading] = useState(false);
   const { open, setOpen, pos, triggerRef, toggle } = usePortalDropdown();
   const options = STATUS_FLOW[app.status] ?? [];
 
@@ -165,7 +170,6 @@ function DeleteMenu({
   const [confirm, setConfirm] = useState(false);
   const [loading, setLoading] = useState(false);
   const { open, setOpen, pos, triggerRef, toggle } = usePortalDropdown();
-
   const menuLeft = pos.left - 150 + pos.width;
 
   async function archive() {
@@ -186,9 +190,7 @@ function DeleteMenu({
   async function hardDelete() {
     setLoading(true);
     try {
-      await fetch(`${API}/applications/${app.id}?delete_files=false`, {
-        method: "DELETE",
-      });
+      await fetch(`${API}/applications/${app.id}?delete_files=false`, { method: "DELETE" });
       onDelete(app.id);
     } finally {
       setLoading(false);
@@ -233,22 +235,16 @@ function DeleteMenu({
           ) : (
             <div className="px-3 py-2 space-y-2">
               <p className="text-xs text-text-secondary leading-tight">
-                Remove from tracker?
-                <br />
+                Remove from tracker?<br />
                 <span className="text-text-muted">(Files kept on disk)</span>
               </p>
               <div className="flex gap-2">
-                <button
-                  onClick={hardDelete}
-                  disabled={loading}
-                  className="text-xs text-red-500 hover:underline disabled:opacity-50"
-                >
+                <button onClick={hardDelete} disabled={loading}
+                  className="text-xs text-red-500 hover:underline disabled:opacity-50">
                   {loading ? "Deleting…" : "Confirm"}
                 </button>
-                <button
-                  onClick={() => setConfirm(false)}
-                  className="text-xs text-text-muted hover:text-text-secondary"
-                >
+                <button onClick={() => setConfirm(false)}
+                  className="text-xs text-text-muted hover:text-text-secondary">
                   Cancel
                 </button>
               </div>
@@ -261,6 +257,13 @@ function DeleteMenu({
   );
 }
 
+// ── Sort indicator ─────────────────────────────────────────────────────────────
+
+function SortIndicator({ col, sortKey, sortDir }: { col: SortKey; sortKey: SortKey; sortDir: SortDir }) {
+  if (col !== sortKey) return <span className="opacity-20 ml-1">↕</span>;
+  return <span className="ml-1 text-accent">{sortDir === "asc" ? "↑" : "↓"}</span>;
+}
+
 // ── Main table ────────────────────────────────────────────────────────────────
 
 export default function ApplicationsTable({
@@ -271,15 +274,69 @@ export default function ApplicationsTable({
   const [apps, setApps]       = useState<Application[]>(initial);
   const [editing, setEditing] = useState<EditState | null>(null);
   const [saving, setSaving]   = useState(false);
+  const [search, setSearch]   = useState("");
+  const [sortKey, setSortKey] = useState<SortKey>("applied_date");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
+
+  function toggleSort(col: SortKey) {
+    if (sortKey === col) {
+      setSortDir((d) => d === "asc" ? "desc" : "asc");
+    } else {
+      setSortKey(col);
+      setSortDir("desc");
+    }
+  }
+
+  // Filter then sort
+  const visible = useMemo(() => {
+    const q = search.toLowerCase().trim();
+    const filtered = q
+      ? apps.filter((a) =>
+          a.company.toLowerCase().includes(q) ||
+          a.role.toLowerCase().includes(q) ||
+          a.status.toLowerCase().includes(q)
+        )
+      : apps;
+
+    return [...filtered].sort((a, b) => {
+      let av: string = "";
+      let bv: string = "";
+      switch (sortKey) {
+        case "applied_date":
+          av = a.applied_date ?? "";
+          bv = b.applied_date ?? "";
+          break;
+        case "company":
+          av = a.company.toLowerCase();
+          bv = b.company.toLowerCase();
+          break;
+        case "role":
+          av = a.role.toLowerCase();
+          bv = b.role.toLowerCase();
+          break;
+        case "status":
+          av = a.status;
+          bv = b.status;
+          break;
+      }
+      const cmp = av < bv ? -1 : av > bv ? 1 : 0;
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+  }, [apps, search, sortKey, sortDir]);
 
   function updateStatus(id: string, status: string) {
-    setApps((prev) => prev.map((a) => (a.id === id ? { ...a, status } : a)));
+    setApps((prev) => prev.map((a) => a.id === id ? { ...a, status } : a));
   }
   function removeApp(id: string) {
     setApps((prev) => prev.filter((a) => a.id !== id));
   }
   function startEdit(app: Application) {
-    setEditing({ id: app.id, company: app.company, role: app.role });
+    setEditing({
+      id:           app.id,
+      company:      app.company,
+      role:         app.role,
+      applied_date: app.applied_date ?? "",
+    });
   }
   function cancelEdit() { setEditing(null); }
 
@@ -287,17 +344,25 @@ export default function ApplicationsTable({
     if (!editing) return;
     setSaving(true);
     try {
-      const res = await fetch(`${API}/applications/${editing.id}`, {
+      // Save company + role
+      const patchRes = await fetch(`${API}/applications/${editing.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ company: editing.company, role: editing.role }),
       });
-      if (res.ok) {
-        const updated = await res.json();
+
+      // Save applied date (upsert)
+      await fetch(`${API}/applications/${editing.id}/dates/applied`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date: editing.applied_date || null }),
+      });
+
+      if (patchRes.ok) {
         setApps((prev) =>
           prev.map((a) =>
             a.id === editing.id
-              ? { ...a, company: updated.company, role: updated.role }
+              ? { ...a, company: editing.company, role: editing.role, applied_date: editing.applied_date || null }
               : a
           )
         );
@@ -308,112 +373,174 @@ export default function ApplicationsTable({
     }
   }
 
+  const thClass = "text-left px-4 py-3 text-xs font-semibold text-text-muted uppercase tracking-wide select-none";
+  const thSortable = `${thClass} cursor-pointer hover:text-text-secondary transition-colors`;
+
   return (
-    <div className="rounded-xl border border-bg-border overflow-visible">
-      <table className="w-full text-sm border-collapse">
-        <thead>
-          <tr className="bg-bg-surface border-b border-bg-border">
-            {["Date", "Company", "Role", "Status", "PDF", ""].map((h, i) => (
-              <th
-                key={i}
-                className="text-left px-4 py-3 text-xs font-semibold text-text-muted uppercase tracking-wide"
-              >
-                {h}
+    <div className="space-y-3">
+      {/* Search bar */}
+      <div className="relative">
+        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted text-sm">⌕</span>
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Filter by company, role or status…"
+          className="w-full pl-8 pr-4 py-2 bg-bg-elevated border border-bg-border rounded-lg text-sm text-text-primary placeholder-text-muted focus:outline-none focus:ring-2 focus:ring-accent/40"
+        />
+        {search && (
+          <button
+            onClick={() => setSearch("")}
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-secondary text-xs"
+          >
+            ✕
+          </button>
+        )}
+      </div>
+
+      {/* Table */}
+      <div className="rounded-xl border border-bg-border overflow-visible">
+        <table className="w-full text-sm border-collapse">
+          <thead>
+            <tr className="bg-bg-surface border-b border-bg-border">
+              <th className={thSortable} onClick={() => toggleSort("applied_date")}>
+                Date applied <SortIndicator col="applied_date" sortKey={sortKey} sortDir={sortDir} />
               </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-bg-border">
-          {apps.map((app, rowIdx) => {
-            const isEditing = editing?.id === app.id;
-            const isLast    = rowIdx === apps.length - 1;
-            return (
-              <tr
-                key={app.id}
-                className={`bg-bg-elevated hover:bg-bg-surface transition-colors ${
-                  app.status === "archived" ? "opacity-50" : ""
-                }`}
-              >
-                <td className={`px-4 py-3 text-text-muted font-mono text-xs whitespace-nowrap ${isLast ? "rounded-bl-xl" : ""}`}>
-                  {app.created_at ? app.created_at.slice(0, 10) : "—"}
-                </td>
-
-                <td className="px-4 py-2">
-                  {isEditing ? (
-                    <input
-                      autoFocus
-                      value={editing.company}
-                      onChange={(e) => setEditing((p) => p ? { ...p, company: e.target.value } : p)}
-                      className="w-full px-2 py-1 text-sm border border-accent/50 rounded-md bg-white focus:outline-none focus:ring-1 focus:ring-accent"
-                    />
-                  ) : (
-                    <span className="font-medium text-text-primary">{app.company}</span>
-                  )}
-                </td>
-
-                <td className="px-4 py-2">
-                  {isEditing ? (
-                    <input
-                      value={editing.role}
-                      onChange={(e) => setEditing((p) => p ? { ...p, role: e.target.value } : p)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") saveEdit();
-                        if (e.key === "Escape") cancelEdit();
-                      }}
-                      className="w-full px-2 py-1 text-sm border border-accent/50 rounded-md bg-white focus:outline-none focus:ring-1 focus:ring-accent"
-                    />
-                  ) : (
-                    <span className="text-text-secondary">{app.role}</span>
-                  )}
-                </td>
-
-                <td className="px-4 py-3">
-                  <StatusDropdown app={app} onUpdate={updateStatus} />
-                </td>
-
-                <td className="px-4 py-3">
-                  {app.has_pdf
-                    ? <span className="text-accent text-xs">✓</span>
-                    : <span className="text-text-muted text-xs">—</span>}
-                </td>
-
-                <td className={`px-4 py-3 ${isLast ? "rounded-br-xl" : ""}`}>
-                  <div className="flex items-center justify-end gap-3">
-                    {isEditing ? (
-                      <>
-                        <button onClick={saveEdit} disabled={saving}
-                          className="text-xs text-accent hover:underline disabled:opacity-50">
-                          {saving ? "Saving…" : "Save"}
-                        </button>
-                        <button onClick={cancelEdit}
-                          className="text-xs text-text-muted hover:text-text-secondary">
-                          Cancel
-                        </button>
-                      </>
-                    ) : (
-                      <>
-                        <button onClick={() => startEdit(app)}
-                          className="text-xs text-text-muted hover:text-text-secondary transition-colors">
-                          Edit
-                        </button>
-                        <Link href={`/applications/${app.id}`}
-                          className="text-xs text-accent hover:underline">
-                          View →
-                        </Link>
-                        <DeleteMenu
-                          app={app}
-                          onArchive={(id) => updateStatus(id, "archived")}
-                          onDelete={removeApp}
-                        />
-                      </>
-                    )}
-                  </div>
+              <th className={thSortable} onClick={() => toggleSort("company")}>
+                Company <SortIndicator col="company" sortKey={sortKey} sortDir={sortDir} />
+              </th>
+              <th className={thSortable} onClick={() => toggleSort("role")}>
+                Role <SortIndicator col="role" sortKey={sortKey} sortDir={sortDir} />
+              </th>
+              <th className={thSortable} onClick={() => toggleSort("status")}>
+                Status <SortIndicator col="status" sortKey={sortKey} sortDir={sortDir} />
+              </th>
+              <th className={thClass}>PDF</th>
+              <th className={thClass} />
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-bg-border">
+            {visible.length === 0 && (
+              <tr>
+                <td colSpan={6} className="px-4 py-8 text-center text-sm text-text-muted">
+                  {search ? `No applications matching "${search}"` : "No applications"}
                 </td>
               </tr>
-            );
-          })}
-        </tbody>
-      </table>
+            )}
+            {visible.map((app, rowIdx) => {
+              const isEditing = editing?.id === app.id;
+              const isLast    = rowIdx === visible.length - 1;
+              return (
+                <tr
+                  key={app.id}
+                  className={`bg-bg-elevated hover:bg-bg-surface transition-colors ${
+                    app.status === "archived" ? "opacity-50" : ""
+                  }`}
+                >
+                  {/* Date applied — editable */}
+                  <td className={`px-4 py-3 text-xs whitespace-nowrap ${isLast ? "rounded-bl-xl" : ""}`}>
+                    {isEditing ? (
+                      <input
+                        type="date"
+                        value={editing.applied_date}
+                        onChange={(e) => setEditing((p) => p ? { ...p, applied_date: e.target.value } : p)}
+                        className="px-2 py-1 text-xs border border-accent/50 rounded-md bg-white focus:outline-none focus:ring-1 focus:ring-accent"
+                      />
+                    ) : app.applied_date ? (
+                      <span className="text-text-muted font-mono">{app.applied_date}</span>
+                    ) : (
+                      <span className="text-text-muted opacity-40">—</span>
+                    )}
+                  </td>
+
+                  {/* Company */}
+                  <td className="px-4 py-2">
+                    {isEditing ? (
+                      <input
+                        autoFocus
+                        value={editing.company}
+                        onChange={(e) => setEditing((p) => p ? { ...p, company: e.target.value } : p)}
+                        className="w-full px-2 py-1 text-sm border border-accent/50 rounded-md bg-white focus:outline-none focus:ring-1 focus:ring-accent"
+                      />
+                    ) : (
+                      <span className="font-medium text-text-primary">{app.company}</span>
+                    )}
+                  </td>
+
+                  {/* Role */}
+                  <td className="px-4 py-2">
+                    {isEditing ? (
+                      <input
+                        value={editing.role}
+                        onChange={(e) => setEditing((p) => p ? { ...p, role: e.target.value } : p)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") saveEdit();
+                          if (e.key === "Escape") cancelEdit();
+                        }}
+                        className="w-full px-2 py-1 text-sm border border-accent/50 rounded-md bg-white focus:outline-none focus:ring-1 focus:ring-accent"
+                      />
+                    ) : (
+                      <span className="text-text-secondary">{app.role}</span>
+                    )}
+                  </td>
+
+                  {/* Status */}
+                  <td className="px-4 py-3">
+                    <StatusDropdown app={app} onUpdate={updateStatus} />
+                  </td>
+
+                  {/* PDF */}
+                  <td className="px-4 py-3">
+                    {app.has_pdf
+                      ? <span className="text-accent text-xs">✓</span>
+                      : <span className="text-text-muted text-xs">—</span>}
+                  </td>
+
+                  {/* Actions */}
+                  <td className={`px-4 py-3 ${isLast ? "rounded-br-xl" : ""}`}>
+                    <div className="flex items-center justify-end gap-3">
+                      {isEditing ? (
+                        <>
+                          <button onClick={saveEdit} disabled={saving}
+                            className="text-xs text-accent hover:underline disabled:opacity-50">
+                            {saving ? "Saving…" : "Save"}
+                          </button>
+                          <button onClick={cancelEdit}
+                            className="text-xs text-text-muted hover:text-text-secondary">
+                            Cancel
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button onClick={() => startEdit(app)}
+                            className="text-xs text-text-muted hover:text-text-secondary transition-colors">
+                            Edit
+                          </button>
+                          <Link href={`/applications/${app.id}`}
+                            className="text-xs text-accent hover:underline">
+                            View →
+                          </Link>
+                          <DeleteMenu
+                            app={app}
+                            onArchive={(id) => updateStatus(id, "archived")}
+                            onDelete={removeApp}
+                          />
+                        </>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {search && visible.length > 0 && (
+        <p className="text-xs text-text-muted text-right">
+          {visible.length} of {apps.length} applications
+        </p>
+      )}
     </div>
   );
 }

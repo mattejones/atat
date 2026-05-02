@@ -44,6 +44,10 @@ class DateCreate(BaseModel):
     notes:     Optional[str] = None
 
 
+class AppliedDateUpsert(BaseModel):
+    date: Optional[str] = None  # None or empty = delete
+
+
 class ManualApplicationCreate(BaseModel):
     company:      str
     role:         str
@@ -72,6 +76,37 @@ def _enrich(app: dict) -> dict:
     return app
 
 
+def _with_applied_date(rows: list, db: sqlite3.Connection) -> list[dict]:
+    """
+    Enrich a list of application rows with their applied_date from application_dates.
+    Uses a single query rather than N+1.
+    """
+    apps = [_enrich(row_to_dict(r)) for r in rows]
+    if not apps:
+        return apps
+
+    ids       = [a["id"] for a in apps]
+    placeholders = ",".join("?" * len(ids))
+    date_rows = db.execute(
+        f"""SELECT application_id, date FROM application_dates
+            WHERE application_id IN ({placeholders}) AND date_type = 'applied'
+            ORDER BY date DESC""",
+        ids,
+    ).fetchall()
+
+    # Keep only the most recent applied date per application
+    date_map: dict[str, str] = {}
+    for row in date_rows:
+        app_id = row["application_id"]
+        if app_id not in date_map:
+            date_map[app_id] = row["date"]
+
+    for app in apps:
+        app["applied_date"] = date_map.get(app["id"])
+
+    return apps
+
+
 # ── List & get ────────────────────────────────────────────────────────────────
 
 @router.get("")
@@ -85,7 +120,7 @@ def list_applications(
         rows = db.execute(
             "SELECT * FROM applications WHERE status != 'archived' ORDER BY created_at DESC"
         ).fetchall()
-    return [_enrich(row_to_dict(r)) for r in rows]
+    return _with_applied_date(rows, db)
 
 
 @router.get("/{app_id}")
@@ -93,7 +128,8 @@ def get_application(app_id: str, db: sqlite3.Connection = Depends(get_db)):
     row = db.execute("SELECT * FROM applications WHERE id = ?", (app_id,)).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Application not found")
-    return _enrich(row_to_dict(row))
+    apps = _with_applied_date([row], db)
+    return apps[0]
 
 
 # ── Create (manual) ───────────────────────────────────────────────────────────
@@ -127,14 +163,15 @@ def create_manual_application(
            VALUES (?, 'status_change', ?, 'Application logged manually')""",
         (app_id, body.status)
     )
-    if body.applied_date and body.status in ("applied", "acknowledged", "interviewing", "offered", "rejected"):
+    if body.applied_date:
         db.execute(
             "INSERT INTO application_dates (application_id, date_type, date) VALUES (?, 'applied', ?)",
             (app_id, body.applied_date)
         )
 
     row = db.execute("SELECT * FROM applications WHERE id = ?", (app_id,)).fetchone()
-    return _enrich(row_to_dict(row))
+    apps = _with_applied_date([row], db)
+    return apps[0]
 
 
 # ── Update ────────────────────────────────────────────────────────────────────
@@ -152,7 +189,8 @@ def update_application(
     current = row_to_dict(row)
     updates = body.model_dump(exclude_none=True)
     if not updates:
-        return current
+        apps = _with_applied_date([row], db)
+        return apps[0]
 
     if "status" in updates and updates["status"] not in VALID_STATUSES:
         raise HTTPException(status_code=422, detail=f"Invalid status: {updates['status']}")
@@ -172,7 +210,9 @@ def update_application(
             (app_id, current["status"], updates["status"])
         )
 
-    return _enrich(row_to_dict(db.execute("SELECT * FROM applications WHERE id = ?", (app_id,)).fetchone()))
+    updated = db.execute("SELECT * FROM applications WHERE id = ?", (app_id,)).fetchone()
+    apps    = _with_applied_date([updated], db)
+    return apps[0]
 
 
 # ── Delete ────────────────────────────────────────────────────────────────────
@@ -263,19 +303,16 @@ def get_pdf(app_id: str, db: sqlite3.Connection = Depends(get_db)):
 
 @router.get("/{app_id}/reasoning")
 def get_reasoning(app_id: str, db: sqlite3.Connection = Depends(get_db)):
-    """Get the LLM reasoning for an application, if captured."""
     row = db.execute(
         "SELECT reasoning, output_dir FROM applications WHERE id = ?", (app_id,)
     ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Application not found")
-
     reasoning = row["reasoning"]
     if not reasoning and row["output_dir"]:
         r_path = Path(row["output_dir"]) / "reasoning.md"
         if r_path.exists():
             reasoning = r_path.read_text(encoding="utf-8")
-
     return {"content": reasoning or "", "has_reasoning": bool(reasoning)}
 
 
@@ -313,6 +350,34 @@ def add_date(app_id: str, body: DateCreate, db: sqlite3.Connection = Depends(get
             (app_id,)
         )
     return {"status": "created"}
+
+
+@router.put("/{app_id}/dates/applied")
+def upsert_applied_date(
+    app_id: str,
+    body: AppliedDateUpsert,
+    db: sqlite3.Connection = Depends(get_db),
+):
+    """
+    Upsert the applied date for an application.
+    Passing date=None or omitting it clears the applied date.
+    """
+    if not db.execute("SELECT 1 FROM applications WHERE id = ?", (app_id,)).fetchone():
+        raise HTTPException(status_code=404, detail="Application not found")
+
+    # Delete any existing applied date first
+    db.execute(
+        "DELETE FROM application_dates WHERE application_id = ? AND date_type = 'applied'",
+        (app_id,)
+    )
+
+    if body.date:
+        db.execute(
+            "INSERT INTO application_dates (application_id, date_type, date) VALUES (?, 'applied', ?)",
+            (app_id, body.date)
+        )
+
+    return {"status": "saved", "date": body.date}
 
 
 # ── Import from filesystem ────────────────────────────────────────────────────

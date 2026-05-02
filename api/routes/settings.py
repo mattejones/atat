@@ -18,23 +18,25 @@ from pydantic import BaseModel
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
-# Repo root — .env lives here
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _ENV_FILE  = _REPO_ROOT / ".env"
+
+# Sentinel pattern for masked keys — never write these to disk
+_MASK_PATTERN = re.compile(r'^.{2,8}•+.{2,8}$')
 
 
 # ── Models ────────────────────────────────────────────────────────────────────
 
 class Settings(BaseModel):
-    llm_provider:     str
-    llm_model:        str
-    anthropic_api_key: Optional[str] = None   # masked on read
-    openai_api_key:    Optional[str] = None   # masked on read
-    cv_library_path:  str
-    output_path:      str
-    thinking_budget:  int
-    render_pdf:       bool
-    temperature:      float
+    llm_provider:      str
+    llm_model:         str
+    anthropic_api_key: Optional[str] = None
+    openai_api_key:    Optional[str] = None
+    cv_library_path:   str
+    output_path:       str
+    thinking_budget:   int
+    render_pdf:        bool
+    temperature:       float
 
 
 class SettingsUpdate(BaseModel):
@@ -52,31 +54,17 @@ class SettingsUpdate(BaseModel):
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _mask(value: str | None) -> str | None:
-    """Return a masked version of a sensitive value for display."""
     if not value or len(value) < 8:
         return None
     return value[:4] + "••••••••" + value[-4:]
 
 
-def _read_env_file() -> dict[str, str]:
-    """Parse the .env file into a key-value dict."""
-    if not _ENV_FILE.exists():
-        return {}
-    result = {}
-    for line in _ENV_FILE.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        result[key.strip()] = value.strip().strip('"').strip("'")
-    return result
+def _is_masked(value: str) -> bool:
+    """Return True if the value looks like a masked key — never write these."""
+    return bool(_MASK_PATTERN.search(value))
 
 
 def _write_env_value(key: str, value: str) -> None:
-    """
-    Update or append a single key in the .env file.
-    Preserves comments, blank lines, and ordering.
-    """
     if not _ENV_FILE.exists():
         _ENV_FILE.write_text(f"{key}={value}\n", encoding="utf-8")
         return
@@ -94,7 +82,6 @@ def _write_env_value(key: str, value: str) -> None:
             new_lines.append(line)
 
     if not replaced:
-        # Append at end
         if new_lines and not new_lines[-1].endswith("\n"):
             new_lines.append("\n")
         new_lines.append(f"{key}={value}\n")
@@ -106,7 +93,6 @@ def _write_env_value(key: str, value: str) -> None:
 
 @router.get("", response_model=Settings)
 def get_settings():
-    """Return current settings. API keys are masked."""
     from pipeline.config import (
         LLM_PROVIDER, LLM_MODEL, CV_LIBRARY_PATH, OUTPUT_PATH,
         THINKING_BUDGET, RENDER_PDF, TEMPERATURE,
@@ -127,15 +113,10 @@ def get_settings():
 
 @router.patch("")
 def update_settings(body: SettingsUpdate):
-    """
-    Write updated values to the .env file.
-    Requires a server restart to take full effect on in-process config.
-    """
     updates = body.model_dump(exclude_none=True)
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
 
-    # Map model fields to .env key names
     key_map = {
         "llm_provider":      "LLM_PROVIDER",
         "llm_model":         "LLM_MODEL",
@@ -148,19 +129,33 @@ def update_settings(body: SettingsUpdate):
         "temperature":       "TEMPERATURE",
     }
 
-    written = []
+    # API key fields — skip if empty or masked
+    key_fields = {"anthropic_api_key", "openai_api_key"}
+
+    written  = []
+    skipped  = []
+
     for field, value in updates.items():
         env_key = key_map.get(field)
         if not env_key:
             continue
-        # Serialise booleans the way python-dotenv expects them
+
+        # Never write masked or empty key values back to disk
+        if field in key_fields:
+            str_value = str(value).strip()
+            if not str_value or _is_masked(str_value):
+                skipped.append(env_key)
+                continue
+
         if isinstance(value, bool):
             value = "true" if value else "false"
+
         _write_env_value(env_key, str(value))
         written.append(env_key)
 
     return {
         "status":  "saved",
         "updated": written,
+        "skipped": skipped,
         "note":    "Restart the API server for changes to take effect.",
     }

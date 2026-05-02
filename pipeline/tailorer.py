@@ -16,6 +16,7 @@ Callers extract reasoning and pass remaining data to cv_to_markdown() / cv_data_
 import json
 import logging
 import re
+import unicodedata
 from datetime import date
 from pathlib import Path
 from typing import Optional
@@ -37,11 +38,35 @@ _REQUIRED_FIELDS = {
 }
 
 
+# ── Text sanitisation ─────────────────────────────────────────────────────────
+
+def sanitise_text(text: str) -> str:
+    """
+    Normalise unicode to ASCII-safe characters.
+
+    NFKD decomposition converts accented chars to base + combining mark
+    (e -> e, -- -> -, smart quotes -> straight quotes).
+    encode/ignore then drops anything still outside ASCII range.
+
+    Common conversions:
+      e, e, e -> e       u, u -> u      n -> n
+      - (en dash) -> -   -- (em dash) -> -
+      " " (smart quotes) -> " "
+      ... -> ...          * -> (dropped)
+    """
+    if not text:
+        return text
+    normalised = unicodedata.normalize("NFKD", text)
+    return normalised.encode("ascii", "ignore").decode("ascii")
+
+
 # ── Library loaders ───────────────────────────────────────────────────────────
 
 def load_text(path: Path) -> str:
+    """Read a file and sanitise to ASCII. Covers library files and prompts."""
     if path.exists():
-        return path.read_text(encoding="utf-8")
+        raw = path.read_text(encoding="utf-8")
+        return sanitise_text(raw)
     log.warning(f"Expected file not found: {path}")
     return ""
 
@@ -63,7 +88,7 @@ def load_persona_files() -> str:
 def load_personal_additions() -> str:
     path = PROMPTS_PATH / "personal_additions.md"
     if path.exists():
-        content = path.read_text(encoding="utf-8").strip()
+        content = load_text(path)
         log.info("Personal additions loaded.")
         return content
     return ""
@@ -78,6 +103,11 @@ def build_system_prompt() -> str:
 
 
 def assemble_user_message(jd_text: str, generation_notes: Optional[str] = None) -> str:
+    # Sanitise user-supplied text (library files are sanitised in load_text)
+    jd_text = sanitise_text(jd_text)
+    if generation_notes:
+        generation_notes = sanitise_text(generation_notes)
+
     notes_block = ""
     if generation_notes and generation_notes.strip():
         notes_block = f"""
@@ -122,9 +152,7 @@ def parse_llm_response(raw: str) -> dict:
     Parse and validate the model's JSON text response.
     Strips markdown code fences if present.
     Raises ValueError immediately on parse failure or missing required fields.
-    No silent fallback — caller decides what to do on error.
     """
-    # Strip markdown code fences: ```json ... ``` or ``` ... ```
     cleaned = re.sub(r'^```(?:json)?\s*', '', raw.strip(), flags=re.IGNORECASE)
     cleaned = re.sub(r'\s*```$', '', cleaned)
     cleaned = cleaned.strip()
@@ -166,10 +194,6 @@ def call_llm(system: str, user: str) -> dict:
 
 
 def _call_anthropic(system: str, user: str) -> str:
-    """
-    Anthropic: returns raw text. Extended thinking supported.
-    Model is instructed via the prompt to output a single JSON object.
-    """
     import anthropic
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -181,7 +205,7 @@ def _call_anthropic(system: str, user: str) -> str:
     extra_kwargs: dict = {}
     if THINKING_BUDGET > 0:
         extra_kwargs["thinking"] = {"type": "enabled", "budget_tokens": THINKING_BUDGET}
-        effective_temperature    = 1  # required for extended thinking
+        effective_temperature    = 1
         log.info(f"Extended thinking enabled — budget: {THINKING_BUDGET} tokens")
     else:
         effective_temperature = TEMPERATURE
@@ -202,7 +226,6 @@ def _call_anthropic(system: str, user: str) -> str:
         f"output: {message.usage.output_tokens} tokens"
     )
 
-    # Collect text blocks only (skip thinking blocks)
     text = "".join(
         block.text for block in message.content
         if block.type == "text"
@@ -235,11 +258,7 @@ def _call_openai(system: str, user: str) -> str:
 # ── Structured -> Markdown ────────────────────────────────────────────────────
 
 def cv_to_markdown(cv_data: dict) -> str:
-    """
-    Convert structured CV dict to canonical Markdown.
-    Format is controlled entirely by us — not the model.
-    parse_cv.py is only used when re-rendering user-edited cv.md files.
-    """
+    """Convert structured CV dict to canonical Markdown."""
     lines = []
 
     lines.append(f"# {cv_data.get('name', '')}")
@@ -258,7 +277,7 @@ def cv_to_markdown(cv_data: dict) -> str:
     lines += ['## Experience', '']
     for exp in cv_data.get('experience', []):
         lines.append(
-            f"### {exp.get('company', '')} — {exp.get('role', '')} | {exp.get('dates', '')}"
+            f"### {exp.get('company', '')} -- {exp.get('role', '')} | {exp.get('dates', '')}"
         )
         lines.append('')
         if exp.get('context'):
@@ -280,7 +299,7 @@ def cv_to_markdown(cv_data: dict) -> str:
     lines += ['## Education', '']
     for edu in cv_data.get('education', []):
         lines.append(
-            f"**{edu.get('degree', '')}** — {edu.get('institution', '')}, {edu.get('years', '')}"
+            f"**{edu.get('degree', '')}** -- {edu.get('institution', '')}, {edu.get('years', '')}"
         )
         if edu.get('subjects'):
             lines.append(f"*{edu['subjects']}*")

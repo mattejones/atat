@@ -22,7 +22,7 @@ function LogManualModal({
     role:         "",
     source_url:   "",
     status:       "applied",
-    applied_date: new Date().toISOString().slice(0, 10),
+    applied_date: "",   // intentionally blank — user fills in the actual date
     notes:        "",
   });
   const [saving, setSaving] = useState(false);
@@ -127,7 +127,7 @@ function LogManualModal({
             </div>
             <div className="space-y-1">
               <label className="text-xs font-medium text-text-secondary uppercase tracking-wide">
-                Date applied
+                Date applied <span className="text-text-muted font-normal normal-case">optional</span>
               </label>
               <input
                 type="date"

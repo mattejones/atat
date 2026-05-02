@@ -18,15 +18,7 @@ interface Settings {
 
 type SaveState = "idle" | "saving" | "saved" | "error";
 
-function Field({
-  label,
-  hint,
-  children,
-}: {
-  label: string;
-  hint?: string;
-  children: React.ReactNode;
-}) {
+function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
     <div className="grid grid-cols-3 gap-4 py-4 border-b border-bg-border last:border-0">
       <div>
@@ -68,18 +60,21 @@ function MaskedKeyInput({
 }
 
 export default function SettingsPage() {
-  const [settings, setSettings] = useState<Settings | null>(null);
-  const [form, setForm]         = useState<Partial<Settings>>({});
-  const [keys, setKeys]         = useState({ anthropic: "", openai: "" });
+  const [settings, setSettings]   = useState<Settings | null>(null);
+  const [form, setForm]           = useState<Partial<Settings>>({});
+  // API keys are tracked separately and only sent if the user typed a new value
+  const [keys, setKeys]           = useState({ anthropic: "", openai: "" });
   const [saveState, setSaveState] = useState<SaveState>("idle");
-  const [error, setError]       = useState<string | null>(null);
+  const [error, setError]         = useState<string | null>(null);
 
   useEffect(() => {
     fetch(`${API}/settings`)
       .then((r) => r.json())
       .then((data) => {
         setSettings(data);
-        setForm(data);
+        // Store form without key fields — keys are managed separately
+        const { anthropic_api_key, openai_api_key, ...rest } = data;
+        setForm(rest);
       })
       .catch(() => setError("Could not load settings — is the API running?"));
   }, []);
@@ -88,10 +83,16 @@ export default function SettingsPage() {
     setSaveState("saving");
     setError(null);
     try {
+      // Base payload — never includes key fields
       const payload: Record<string, unknown> = { ...form };
-      // Only send key values if they were actually changed (not empty)
-      if (keys.anthropic.trim()) payload.anthropic_api_key = keys.anthropic.trim();
-      if (keys.openai.trim())    payload.openai_api_key    = keys.openai.trim();
+      delete payload.anthropic_api_key;
+      delete payload.openai_api_key;
+
+      // Only include keys if user typed something new and non-empty
+      const anthropic = keys.anthropic.trim();
+      const openai    = keys.openai.trim();
+      if (anthropic) payload.anthropic_api_key = anthropic;
+      if (openai)    payload.openai_api_key    = openai;
 
       const res = await fetch(`${API}/settings`, {
         method: "PATCH",
@@ -100,6 +101,9 @@ export default function SettingsPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Save failed");
+
+      // Clear key inputs after successful save
+      setKeys({ anthropic: "", openai: "" });
       setSaveState("saved");
       setTimeout(() => setSaveState("idle"), 3000);
     } catch (e: any) {
@@ -125,7 +129,8 @@ export default function SettingsPage() {
       <div>
         <h1 className="text-2xl font-semibold text-text-primary">Settings</h1>
         <p className="text-sm text-text-secondary mt-1">
-          Changes are written to your <code className="text-xs bg-bg-surface px-1 py-0.5 rounded">.env</code> file.
+          Changes are written to your{" "}
+          <code className="text-xs bg-bg-surface px-1 py-0.5 rounded">.env</code> file.
           Restart the API server for changes to take effect.
         </p>
       </div>
@@ -139,10 +144,9 @@ export default function SettingsPage() {
       {settings && (
         <div className="bg-bg-elevated border border-bg-border rounded-xl divide-y divide-bg-border px-6">
 
-          {/* LLM Provider */}
           <Field label="LLM Provider" hint="Which AI provider to use for generation">
             <select
-              value={form.llm_provider ?? settings.llm_provider}
+              value={(form.llm_provider ?? settings.llm_provider) as string}
               onChange={(e) => set("llm_provider", e.target.value)}
               className="w-full px-3 py-1.5 bg-white border border-bg-border rounded-lg text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/40"
             >
@@ -151,20 +155,18 @@ export default function SettingsPage() {
             </select>
           </Field>
 
-          {/* Model */}
           <Field label="Model" hint="Model identifier string">
             <input
               type="text"
-              value={form.llm_model ?? settings.llm_model}
+              value={(form.llm_model ?? settings.llm_model) as string}
               onChange={(e) => set("llm_model", e.target.value)}
               className="w-full px-3 py-1.5 bg-white border border-bg-border rounded-lg text-sm text-text-primary font-mono focus:outline-none focus:ring-2 focus:ring-accent/40"
             />
           </Field>
 
-          {/* Anthropic API Key */}
           <Field
             label="Anthropic API Key"
-            hint={settings.anthropic_api_key ? `Current: ${settings.anthropic_api_key}` : "Not set"}
+            hint={settings.anthropic_api_key ? `Current key: ${settings.anthropic_api_key}` : "Not set"}
           >
             <MaskedKeyInput
               value={keys.anthropic}
@@ -173,10 +175,9 @@ export default function SettingsPage() {
             />
           </Field>
 
-          {/* OpenAI API Key */}
           <Field
             label="OpenAI API Key"
-            hint={settings.openai_api_key ? `Current: ${settings.openai_api_key}` : "Not set"}
+            hint={settings.openai_api_key ? `Current key: ${settings.openai_api_key}` : "Not set"}
           >
             <MaskedKeyInput
               value={keys.openai}
@@ -185,27 +186,24 @@ export default function SettingsPage() {
             />
           </Field>
 
-          {/* CV Library Path */}
           <Field label="CV Library Path" hint="Path to your cv-library repo">
             <input
               type="text"
-              value={form.cv_library_path ?? settings.cv_library_path}
+              value={(form.cv_library_path ?? settings.cv_library_path) as string}
               onChange={(e) => set("cv_library_path", e.target.value)}
               className="w-full px-3 py-1.5 bg-white border border-bg-border rounded-lg text-sm text-text-primary font-mono focus:outline-none focus:ring-2 focus:ring-accent/40"
             />
           </Field>
 
-          {/* Output Path */}
           <Field label="Output Path" hint="Where generated CVs are saved">
             <input
               type="text"
-              value={form.output_path ?? settings.output_path}
+              value={(form.output_path ?? settings.output_path) as string}
               onChange={(e) => set("output_path", e.target.value)}
               className="w-full px-3 py-1.5 bg-white border border-bg-border rounded-lg text-sm text-text-primary font-mono focus:outline-none focus:ring-2 focus:ring-accent/40"
             />
           </Field>
 
-          {/* Thinking Budget */}
           <Field label="Thinking Budget" hint="Extended thinking tokens (0 to disable)">
             <div className="flex items-center gap-3">
               <input
@@ -213,7 +211,7 @@ export default function SettingsPage() {
                 min={0}
                 max={32000}
                 step={1000}
-                value={form.thinking_budget ?? settings.thinking_budget}
+                value={(form.thinking_budget ?? settings.thinking_budget) as number}
                 onChange={(e) => set("thinking_budget", parseInt(e.target.value) || 0)}
                 className="w-32 px-3 py-1.5 bg-white border border-bg-border rounded-lg text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-accent/40"
               />
@@ -221,12 +219,11 @@ export default function SettingsPage() {
             </div>
           </Field>
 
-          {/* Render PDF */}
           <Field label="Render PDF" hint="Automatically render PDF after generation">
             <label className="flex items-center gap-2 cursor-pointer">
               <input
                 type="checkbox"
-                checked={form.render_pdf ?? settings.render_pdf}
+                checked={(form.render_pdf ?? settings.render_pdf) as boolean}
                 onChange={(e) => set("render_pdf", e.target.checked)}
                 className="w-4 h-4 accent-accent"
               />
@@ -239,7 +236,6 @@ export default function SettingsPage() {
         </div>
       )}
 
-      {/* Save */}
       <div className="flex items-center gap-4">
         <button
           onClick={save}
