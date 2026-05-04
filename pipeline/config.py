@@ -28,6 +28,14 @@ DB_PATH = os.getenv("DB_PATH", str(REPO_ROOT / "data" / "atat.db"))
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "anthropic")
 LLM_MODEL    = os.getenv("LLM_MODEL",    "claude-sonnet-4-6")
 
+# Judge model — cheaper/faster model used for Tier 2 accuracy checks.
+# Defaults to Haiku for Anthropic, gpt-4o-mini for OpenAI.
+JUDGE_MODEL = os.getenv(
+    "JUDGE_MODEL",
+    "claude-haiku-4-5-20251001" if os.getenv("LLM_PROVIDER", "anthropic") == "anthropic"
+    else "gpt-4o-mini",
+)
+
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 OPENAI_API_KEY    = os.getenv("OPENAI_API_KEY")
 

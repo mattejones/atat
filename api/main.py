@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from api.routes.applications import router as applications_router
 from api.routes.generate import router as generate_router
 from api.routes.render import router as render_router
+from api.routes.review import router as review_router
 from api.routes.scrape import router as scrape_router
 from api.routes.sections import router as sections_router
 from api.routes.settings import router as settings_router
@@ -40,6 +41,7 @@ def create_app() -> FastAPI:
     app.include_router(applications_router)
     app.include_router(generate_router)
     app.include_router(render_router)
+    app.include_router(review_router)
     app.include_router(scrape_router)
     app.include_router(sections_router)
     app.include_router(settings_router)
