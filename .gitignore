@@ -1,12 +1,14 @@
 # Environment
 .env
 
-# Input - never commit JD staging
-jds/
-
-
 # Output - never commit generated CVs or JDs
 output/
+
+# JD drop folder - may contain confidential job descriptions
+jds/
+
+# Database — local data, never committed
+data/
 
 # Personal prompt additions - never commit
 prompts/personal_additions.md
@@ -25,6 +27,10 @@ dist/
 build/
 .venv/
 venv/
+
+# Node
+web/node_modules/
+web/.next/
 
 # OS
 .DS_Store

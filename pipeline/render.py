@@ -4,25 +4,19 @@ render.py — Render an ATAT-generated CV Markdown file to a PDF via Typst.
 Pipeline:
     cv.md  ->  parse_cv()  ->  ParsedCV  ->  build_typst_doc()  ->  .typ  ->  typst.Compiler  ->  cv.pdf
 
-Fonts:
-    Poppins TTF files are expected in atat/fonts/.
-    Download them once — see README for instructions.
-
 Design language:
-  - Font:    Poppins throughout (weight variation provides hierarchy)
+  - Font:    Poppins throughout
   - Palette: Warm off-white background, sage green accent, warm grays
-  - Layout:  margin: (top: PAGE_TOP) on ALL pages — consistent, no tricks
-             Page 1 header cancels its own margin with #v(-PAGE_TOP), then
-             renders full-bleed. Page 2+ gets the margin for free.
-             Section headers glued to first content item only.
-             Experience entries are breakable — content flows freely.
+  - Layout:  margin: (top: PAGE_TOP) on ALL pages
+             Page 1 cancels margin with #v(-PAGE_TOP) for full-bleed header
+  - Metadata: #set document() sets ATS-readable title/author/keywords
 
 Public API:
-    render_cv(cv_md_path: Path, output_dir: Path) -> Path
+    render_cv(cv_md_path, output_dir, company=None) -> Path
+    pdf_filename(name, company) -> str   — e.g. "MattJonesStripeCV.pdf"
 
 CLI:
-    python -m pipeline.render path/to/cv.md
-    python -m pipeline.render path/to/cv.md --out path/to/output/dir
+    python -m pipeline.render path/to/cv.md [--out dir] [--company Stripe]
 """
 
 import logging
@@ -33,10 +27,8 @@ from pipeline.parse_cv import ParsedCV, ExperienceEntry, EducationEntry, parse_c
 
 log = logging.getLogger(__name__)
 
-# ── Font path ──────────────────────────────────────────────────────────────────
 _FONTS_DIR = Path(__file__).resolve().parent.parent / "fonts"
 
-# ── Colour palette ─────────────────────────────────────────────────────────────
 P: dict[str, str] = {
     "bg":      "#F8F5F1",
     "hdr_bg":  "#EDE8E1",
@@ -51,9 +43,24 @@ P: dict[str, str] = {
     "date":    "#5C7254",
 }
 
-PAGE_TOP    = "16mm"   # top margin on ALL pages (including page 1)
+PAGE_TOP    = "16mm"
 PAGE_SIDE   = "22mm"
 PAGE_BOTTOM = "22mm"
+
+
+# ── Filename helper ────────────────────────────────────────────────────────────
+
+def pdf_filename(name: str, company: str) -> str:
+    """
+    Format the PDF download filename as FirstNameLastNameCompanyCV.pdf.
+    e.g. pdf_filename("Matt Jones", "Stripe") -> "MattJonesStripeCV.pdf"
+    """
+    def slug(s: str) -> str:
+        return re.sub(r'[^a-zA-Z0-9]', '', s.title())
+
+    name_slug    = slug(name)    if name    else "CV"
+    company_slug = slug(company) if company else ""
+    return f"{name_slug}{company_slug}CV.pdf"
 
 
 # ── Typst escaping ─────────────────────────────────────────────────────────────
@@ -67,6 +74,11 @@ def esc(t: str) -> str:
     ]:
         t = t.replace(s, r)
     return t
+
+
+def esc_str(t: str) -> str:
+    """Escape for Typst string literals (inside double quotes)."""
+    return t.replace('\\', '\\\\').replace('"', '\\"')
 
 
 def esc_url(t: str) -> str:
@@ -91,10 +103,6 @@ _DOT_SEP = f'#h(4pt)#text(fill:rgb("{P["accent2"]}"))[·]#h(4pt)'
 
 
 def _build_contact_line(contact: str) -> str:
-    """
-    Parse contact string (· separated) into Typst with hyperlinks.
-    Handles email, phone, LinkedIn, and generic URLs.
-    """
     parts    = [p.strip() for p in contact.split('·')]
     rendered = []
     for p in parts:
@@ -133,7 +141,6 @@ def _sh(title: str) -> str:
 # ── Experience ─────────────────────────────────────────────────────────────────
 
 def _render_exp(e: ExperienceEntry) -> str:
-    """Not breakable — long entries flow naturally across pages."""
     co, ro, dt = esc(e.company), esc(e.role), esc(e.dates)
 
     if ro:
@@ -211,26 +218,58 @@ def _render_cert(cert: str) -> str:
     )
 
 
+# ── PDF metadata ───────────────────────────────────────────────────────────────
+
+def _build_doc_metadata(cv: ParsedCV, company: str = "") -> str:
+    """
+    Build the #set document() block for ATS-readable PDF metadata.
+
+    Title:    "Matt Jones – Senior Engineer at Stripe"
+    Author:   "Matt Jones"
+    Keywords: derived from skills categories and any certification names
+    """
+    name    = cv.name or "CV"
+    title_parts = [name]
+    if cv.experience:
+        first = cv.experience[0]
+        if first.role:
+            title_parts.append(first.role)
+        if company:
+            title_parts.append(f"at {company}")
+    doc_title  = esc_str(" – ".join(title_parts))
+    doc_author = esc_str(name)
+
+    # Build keyword list from skill categories + top-level cert names
+    kw_parts: list[str] = []
+    for cat, _ in cv.skills:
+        kw_parts.append(f'"{esc_str(cat)}"')
+    # Limit to 10 keywords
+    kw_parts = kw_parts[:10]
+    keywords_str = ", ".join(kw_parts) if kw_parts else '"CV"'
+
+    return '\n'.join([
+        f'#set document(',
+        f'  title: "{doc_title}",',
+        f'  author: "{doc_author}",',
+        f'  keywords: ({keywords_str}),',
+        f')',
+    ])
+
+
 # ── Document builder ───────────────────────────────────────────────────────────
 
-def build_typst_doc(cv: ParsedCV) -> str:
-    """
-    Margin strategy:
-      margin: (top: PAGE_TOP) on ALL pages — page 2+ gets it for free.
-      Page 1 header uses #v(-PAGE_TOP) at the very start to "eat" the top
-      margin and render full-bleed, then the header block renders normally.
-      This is the standard Typst pattern for page-1-only full-bleed headers.
-    """
+def build_typst_doc(cv: ParsedCV, company: str = "") -> str:
     ne = esc(cv.name)
     ct = _build_contact_line(cv.contact)
     pe = esc(cv.profile)
+
+    metadata = _build_doc_metadata(cv, company)
 
     profile_block = (
         f'#par(leading:6.5pt)[#text(font:"Poppins",size:9.5pt,weight:"regular",'
         f'fill:rgb("{P["body"]}"))[{pe}]]'
     )
 
-    # Experience — header glued to first entry only; rest flow freely
     exp_entries = [_render_exp(e) for e in cv.experience]
     if exp_entries:
         exp_section = (
@@ -279,9 +318,9 @@ def build_typst_doc(cv: ParsedCV) -> str:
 
     return '\n'.join([
         '// ATAT CV — generated by render.py',
+        metadata,
         '#set page(',
         '  paper: "a4",',
-        # Consistent top margin on ALL pages. Page 1 cancels it with #v(-PAGE_TOP).
         f'  margin: (top: {PAGE_TOP}, bottom: {PAGE_BOTTOM}, left: 0pt, right: 0pt),',
         ')',
         '#set par(leading: 5.5pt, spacing: 0pt)',
@@ -289,9 +328,6 @@ def build_typst_doc(cv: ParsedCV) -> str:
         f'#show link: it => text(fill: rgb("{P["accent"]}"))'
         f'[#underline(offset:2pt,stroke:0.5pt+rgb("{P["accent2"]}"))[#it]]',
         '',
-        '// ── PAGE 1 HEADER ────────────────────────────────────────────────────',
-        '// #v(-PAGE_TOP) cancels the top margin so the header fills edge-to-edge.',
-        '// All other pages keep their margin naturally — no context/place needed.',
         f'#v(-{PAGE_TOP})',
         f'#block(width: 100%, fill: rgb("{P["hdr_bg"]}"), above: 0pt, below: 0pt)[',
         f'  #pad(top: 11mm, bottom: 10mm, left: {PAGE_SIDE}, right: {PAGE_SIDE})[',
@@ -304,7 +340,6 @@ def build_typst_doc(cv: ParsedCV) -> str:
         f'  #line(length: 100%, stroke: 0.5pt + rgb("{P["rule"]}"))',
         ']',
         '',
-        '// ── BODY ─────────────────────────────────────────────────────────────',
         f'#pad(left: {PAGE_SIDE}, right: {PAGE_SIDE})[',
         '',
         f'#v(14pt)',
@@ -329,8 +364,11 @@ def build_typst_doc(cv: ParsedCV) -> str:
 
 # ── Renderer ───────────────────────────────────────────────────────────────────
 
-def render_cv(cv_md_path: Path, output_dir: Path) -> Path:
-    """Parse a CV Markdown file and render it to PDF via Typst."""
+def render_cv(cv_md_path: Path, output_dir: Path, company: str = "") -> Path:
+    """
+    Parse a CV Markdown file and render it to PDF via Typst.
+    Returns the path to the generated PDF (always named cv.pdf in output_dir).
+    """
     try:
         import typst as typst_lib
     except ImportError:
@@ -346,11 +384,10 @@ def render_cv(cv_md_path: Path, output_dir: Path) -> Path:
 
     markdown   = cv_md_path.read_text(encoding='utf-8')
     cv         = parse_cv(markdown)
-    typ_source = build_typst_doc(cv)
+    typ_source = build_typst_doc(cv, company=company)
 
     typ_path = output_dir / 'cv.typ'
     typ_path.write_text(typ_source, encoding='utf-8')
-    log.info(f"Typst source: {typ_path.name}")
 
     pdf_path = output_dir / 'cv.pdf'
     try:
@@ -361,33 +398,24 @@ def render_cv(cv_md_path: Path, output_dir: Path) -> Path:
             ignore_system_fonts=True,
         )
         compiler.compile(output=str(pdf_path), format="pdf")
-        log.info(f"PDF: {pdf_path.name}")
+        log.info(f"PDF rendered: {pdf_path}")
     except typst_lib.TypstError as e:
         raise RuntimeError(f"Typst compilation failed: {e}") from e
 
     return pdf_path
 
 
-# ── CLI entry point ────────────────────────────────────────────────────────────
+# ── CLI ────────────────────────────────────────────────────────────────────────
 
 def _cli() -> None:
-    import argparse
-    import sys
+    import argparse, sys
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-    parser = argparse.ArgumentParser(
-        description="Render an ATAT cv.md to PDF via Typst.",
-        epilog=(
-            "Examples:\n"
-            "  python -m pipeline.render output/2026-04-28_stripe/cv.md\n"
-            "  python -m pipeline.render cv.md --out ./output/stripe\n"
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument("cv_md", metavar="cv.md", help="Path to the CV Markdown file.")
-    parser.add_argument("--out", metavar="DIR", default=None,
-                        help="Output dir for cv.typ and cv.pdf. Defaults to same dir as input.")
+    parser = argparse.ArgumentParser(description="Render an ATAT cv.md to PDF via Typst.")
+    parser.add_argument("cv_md",    metavar="cv.md", help="Path to the CV Markdown file.")
+    parser.add_argument("--out",     metavar="DIR",     default=None)
+    parser.add_argument("--company", metavar="COMPANY", default="")
     args = parser.parse_args()
 
     cv_md_path = Path(args.cv_md).resolve()
@@ -399,8 +427,8 @@ def _cli() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        pdf_path = render_cv(cv_md_path, output_dir)
-        print(f"PDF written: {pdf_path}")
+        pdf = render_cv(cv_md_path, output_dir, company=args.company)
+        print(f"PDF written: {pdf}")
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)

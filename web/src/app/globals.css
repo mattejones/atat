@@ -1,0 +1,37 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-inter: "Inter", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", monospace;
+}
+
+html {
+  background-color: #F0EDE8;
+  color: #1C1812;
+}
+
+/* Markdown preview styles */
+.prose-cv h2 {
+  @apply text-xs font-semibold tracking-widest uppercase text-accent mt-6 mb-2;
+}
+.prose-cv h3 {
+  @apply text-sm font-semibold text-text-primary mt-4 mb-1;
+}
+.prose-cv p {
+  @apply text-sm text-text-secondary leading-relaxed mb-2;
+}
+.prose-cv ul {
+  @apply list-none pl-0 space-y-1;
+}
+.prose-cv ul li {
+  @apply text-sm text-text-secondary leading-relaxed pl-4 relative;
+}
+.prose-cv ul li::before {
+  content: "";
+  @apply absolute left-0 top-2 w-1.5 h-1.5 rounded-full bg-accent-dim;
+}
+.prose-cv hr {
+  @apply border-bg-border my-4;
+}
