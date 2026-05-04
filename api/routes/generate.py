@@ -4,6 +4,11 @@ Writes to both the database and the filesystem output folder.
 
 call_llm() now returns a structured dict via tool use — no text parsing.
 reasoning is extracted from cv_data['reasoning'] before Markdown conversion.
+
+Phase 2 addition: After generation, the CV is split into canonical sections.
+Each section gets a section row and an initial report row in the database.
+Section files are written to output/{app_id}/sections/{section_name}/{report_id}.md
+cv.md is composed from section content via compose_cv_markdown().
 """
 
 import json
@@ -25,7 +30,12 @@ from pipeline.tailorer import (
     build_system_prompt,
     assemble_user_message,
     call_llm,
-    cv_to_markdown,
+)
+from pipeline.sections import (
+    split_cv_sections,
+    compose_cv_markdown,
+    write_section_file,
+    SECTION_ORDER,
 )
 
 router = APIRouter(prefix="/generate", tags=["generate"])
@@ -71,6 +81,7 @@ def generate_cv(
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "jd.txt").write_text(request.jd_text, encoding="utf-8")
 
+    # ── LLM call ──────────────────────────────────────────────────────────────
     try:
         system  = build_system_prompt()
         user    = assemble_user_message(request.jd_text, request.generation_notes)
@@ -78,9 +89,18 @@ def generate_cv(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"LLM generation failed: {e}")
 
-    # Extract reasoning before converting to Markdown
-    reasoning   = cv_data.pop("reasoning", "")
-    cv_markdown = cv_to_markdown(cv_data)
+    reasoning = cv_data.pop("reasoning", "")
+    name      = cv_data.get("name", "")
+    contact   = cv_data.get("contact", {})
+
+    # ── Section splitting ─────────────────────────────────────────────────────
+    try:
+        section_content = split_cv_sections(cv_data)
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=f"Section splitting failed: {e}")
+
+    # ── Compose full cv.md from section content ───────────────────────────────
+    cv_markdown = compose_cv_markdown(name, contact, section_content)
 
     (out_dir / "cv.md").write_text(cv_markdown, encoding="utf-8")
     if reasoning:
@@ -101,6 +121,8 @@ def generate_cv(
     (out_dir / "run_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
     now = datetime.now().isoformat()
+
+    # ── Insert application row first (sections FK depends on this) ────────────
     db.execute(
         """INSERT INTO applications
            (id, company, role, source_url, jd_text, cv_markdown,
@@ -117,9 +139,44 @@ def generate_cv(
     db.execute(
         """INSERT INTO application_events
            (application_id, event_type, to_status, detail)
-           VALUES (?, 'status_change', 'generated', 'CV generated via tool use')""",
+           VALUES (?, 'status_change', 'generated', 'CV generated and split into sections')""",
         (app_id,)
     )
+
+    # ── Write section files and insert section/report rows ────────────────────
+    for section_name in SECTION_ORDER:
+        content = section_content.get(section_name, "")
+        if not content:
+            continue
+
+        section_id = str(uuid.uuid4())
+        report_id  = str(uuid.uuid4())
+
+        file_path = write_section_file(out_dir, section_name, report_id, content)
+
+        db.execute(
+            """INSERT INTO sections
+               (id, application_id, section_name, accepted_report_id, created_at, updated_at)
+               VALUES (?, ?, ?, NULL, ?, ?)""",
+            (section_id, app_id, section_name, now, now),
+        )
+
+        db.execute(
+            """INSERT INTO reports
+               (id, application_id, section_id, parent_report_id,
+                section_name, attempt, file_path, status,
+                global_comment, formatted_prompt, escalated, created_at)
+               VALUES (?, ?, ?, NULL, ?, 1, ?, 'pending', NULL, NULL, 0, ?)""",
+            (report_id, app_id, section_id, section_name, str(file_path), now),
+        )
+
+    if RENDER_PDF:
+        try:
+            from pipeline.render import render_cv
+            render_cv(out_dir / "cv.md", out_dir)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"PDF rendering failed: {e}")
 
     return GenerateResponse(
         app_id=app_id,
