@@ -21,16 +21,16 @@ this order regardless of dict insertion order.
 
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Union
 
 log = logging.getLogger(__name__)
 
 # ── Canonical section names ───────────────────────────────────────────────────
 
-PROFILE       = "profile"
-EXPERIENCE    = "experience"
-SKILLS        = "skills"
-EDUCATION     = "education"
+PROFILE        = "profile"
+EXPERIENCE     = "experience"
+SKILLS         = "skills"
+EDUCATION      = "education"
 CERTIFICATIONS = "certifications"
 
 SECTION_ORDER = [PROFILE, EXPERIENCE, SKILLS, EDUCATION, CERTIFICATIONS]
@@ -46,7 +46,7 @@ SECTION_LABELS = {
 
 # ── Section splitter ──────────────────────────────────────────────────────────
 
-def split_cv_sections(cv_data: dict) -> dict[str, str]:
+def split_cv_sections(cv_data: dict) -> dict:
     """
     Split a validated cv_data dict into per-section raw text.
 
@@ -56,7 +56,7 @@ def split_cv_sections(cv_data: dict) -> dict[str, str]:
 
     Raises ValueError if any required section is missing or empty.
     """
-    sections: dict[str, str] = {}
+    sections: dict = {}
 
     # ── Profile ───────────────────────────────────────────────────────────────
     profile = cv_data.get("profile", "").strip()
@@ -66,8 +66,8 @@ def split_cv_sections(cv_data: dict) -> dict[str, str]:
 
     # ── Experience ────────────────────────────────────────────────────────────
     experience_entries = cv_data.get("experience", [])
-    earlier = cv_data.get("earlier_experience", "").strip()
-    experience_lines: list[str] = []
+    earlier            = cv_data.get("earlier_experience", "").strip()
+    experience_lines: list = []
 
     for exp in experience_entries:
         experience_lines.append(
@@ -90,7 +90,7 @@ def split_cv_sections(cv_data: dict) -> dict[str, str]:
     sections[EXPERIENCE] = "\n".join(experience_lines).strip()
 
     # ── Skills ────────────────────────────────────────────────────────────────
-    skills_lines: list[str] = []
+    skills_lines: list = []
     for skill in cv_data.get("skills", []):
         skills_lines.append(
             f"**{skill.get('category', '')}:** {skill.get('items', '')}"
@@ -98,7 +98,7 @@ def split_cv_sections(cv_data: dict) -> dict[str, str]:
     sections[SKILLS] = "\n".join(skills_lines).strip()
 
     # ── Education ─────────────────────────────────────────────────────────────
-    education_lines: list[str] = []
+    education_lines: list = []
     for edu in cv_data.get("education", []):
         education_lines.append(
             f"**{edu.get('degree', '')}** -- "
@@ -110,7 +110,7 @@ def split_cv_sections(cv_data: dict) -> dict[str, str]:
     sections[EDUCATION] = "\n".join(education_lines).strip()
 
     # ── Certifications ────────────────────────────────────────────────────────
-    cert_lines: list[str] = []
+    cert_lines: list = []
     for cert in cv_data.get("certifications", []):
         cert_lines.append(f"- {cert}")
     sections[CERTIFICATIONS] = "\n".join(cert_lines).strip()
@@ -123,8 +123,8 @@ def split_cv_sections(cv_data: dict) -> dict[str, str]:
 
 def compose_cv_markdown(
     name:            str,
-    contact:         dict,
-    section_content: dict[str, str],
+    contact:         Union[dict, str],
+    section_content: dict,
 ) -> str:
     """
     Compose a full cv.md from per-section raw content.
@@ -134,23 +134,33 @@ def compose_cv_markdown(
 
     Args:
         name:            Full name from cv_data.
-        contact:         Contact dict from cv_data (email, phone, location, linkedin).
+        contact:         Contact dict (email, phone, location, linkedin keys)
+                         OR a raw pre-formatted contact string. Passing a raw
+                         string is used by the accept flow which reconstructs
+                         the header from the existing cv_markdown rather than
+                         re-parsing structured contact fields.
         section_content: dict[section_name -> raw section text].
 
     Returns:
-        Full CV as a Markdown string, consistent with the output of cv_to_markdown().
+        Full CV as a Markdown string.
     """
-    lines: list[str] = []
+    lines: list = []
 
     # ── Header ────────────────────────────────────────────────────────────────
     lines.append(f"# {name}")
-    contact_parts = [
-        contact.get("email", ""),
-        contact.get("phone", ""),
-        contact.get("location", ""),
-        contact.get("linkedin", ""),
-    ]
-    lines.append(" · ".join(p for p in contact_parts if p))
+
+    if isinstance(contact, str):
+        # Raw contact string — passed through as-is (accept flow)
+        lines.append(contact)
+    else:
+        contact_parts = [
+            contact.get("email", ""),
+            contact.get("phone", ""),
+            contact.get("location", ""),
+            contact.get("linkedin", ""),
+        ]
+        lines.append(" · ".join(p for p in contact_parts if p))
+
     lines += ["", "---", ""]
 
     # ── Sections ──────────────────────────────────────────────────────────────
@@ -174,7 +184,6 @@ def compose_cv_markdown(
 def section_file_path(output_dir: Path, section_name: str, report_id: str) -> Path:
     """
     Return the canonical path for a section report file.
-
     Pattern: output/{app_id}/sections/{section_name}/{report_id}.md
     """
     return output_dir / "sections" / section_name / f"{report_id}.md"

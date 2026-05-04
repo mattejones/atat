@@ -18,6 +18,55 @@ const ARRANGEMENT_LABELS: Record<string, string> = {
 
 const CURRENCIES = ["GBP", "USD", "EUR", "AUD", "CAD", "SGD"];
 
+const SECTION_LABELS: Record<string, string> = {
+  profile:        "Profile",
+  experience:     "Experience",
+  skills:         "Skills",
+  education:      "Education",
+  certifications: "Certifications",
+};
+
+// ── Sections panel ────────────────────────────────────────────────────────────
+
+function SectionsPanel({ appId, sections }: { appId: string; sections: any[] }) {
+  if (!sections.length) return null;
+
+  return (
+    <div className="bg-bg-surface border border-bg-border rounded-xl px-5 py-4">
+      <h2 className="text-xs font-semibold text-text-muted uppercase tracking-wide mb-3">
+        Section review
+      </h2>
+      <div className="flex flex-wrap gap-2">
+        {sections.map((section: any) => {
+          const accepted = !!section.accepted_report_id;
+          const flagCount = section.latest_report?.active_flags ?? null;
+          const hasEval   = section.latest_report?.status !== "pending" || section.latest_report?.escalated;
+
+          return (
+            <Link
+              key={section.id}
+              href={`/applications/${appId}/review/${section.section_name}`}
+              className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-xs transition-colors hover:border-accent/50 ${
+                accepted
+                  ? "border-green-300 bg-green-50 text-green-800"
+                  : "border-bg-border bg-bg-elevated text-text-secondary hover:text-text-primary"
+              }`}
+            >
+              <span className="font-medium">
+                {SECTION_LABELS[section.section_name] ?? section.section_name}
+              </span>
+              {accepted && <span className="text-green-600 text-[10px]">✓</span>}
+              {!accepted && section.latest_report?.escalated && (
+                <span className="text-amber-600 text-[10px]">⚠</span>
+              )}
+            </Link>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ── Role details panel ────────────────────────────────────────────────────────
 
 function RoleDetails({ meta, onSave }: { meta: any; onSave: (updates: any) => void }) {
@@ -208,6 +257,7 @@ export default function ApplicationPage() {
   const id     = params.id as string;
 
   const [meta, setMeta]               = useState<any>(null);
+  const [sections, setSections]       = useState<any[]>([]);
   const [content, setContent]         = useState("");
   const [edited, setEdited]           = useState("");
   const [reasoning, setReasoning]     = useState<string>("");
@@ -222,10 +272,11 @@ export default function ApplicationPage() {
   useEffect(() => { loadData(); }, [id]);
 
   async function loadData() {
-    const [metaRes, cvRes, reasonRes] = await Promise.all([
+    const [metaRes, cvRes, reasonRes, sectionsRes] = await Promise.all([
       fetch(`${API}/applications/${id}`),
       fetch(`${API}/applications/${id}/cv`),
       fetch(`${API}/applications/${id}/reasoning`),
+      fetch(`${API}/sections/${id}`),
     ]);
     if (metaRes.ok) {
       const m = await metaRes.json();
@@ -241,6 +292,10 @@ export default function ApplicationPage() {
       const r = await reasonRes.json();
       setHasReasoning(r.has_reasoning);
       if (r.has_reasoning) setReasoning(r.content);
+    }
+    if (sectionsRes.ok) {
+      const s = await sectionsRes.json();
+      setSections(s);
     }
   }
 
@@ -340,6 +395,9 @@ export default function ApplicationPage() {
       )}
 
       {meta && <RoleDetails meta={meta} onSave={handleRoleDetailsSave} />}
+
+      {/* Section review entry points */}
+      {sections.length > 0 && <SectionsPanel appId={id} sections={sections} />}
 
       {/* View toggle */}
       <div className="flex gap-1 bg-bg-surface rounded-lg p-1 w-fit border border-bg-border">

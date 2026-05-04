@@ -11,17 +11,24 @@ Endpoints:
 The retry flow:
   1. Load active (non-dismissed) flags from the current report
   2. Build constraint block from flags + user's global comment
-  3. Call pipeline.retry.regenerate_section() with LLM_MODEL
-  4. Write new section file
-  5. Insert chained report row (parent_report_id = current report id)
-  6. Run orchestrator against new report
-  7. Return new report id and orchestrator result
+  3. Load application context (jd_text, generation_notes, output_dir)
+  4. Call regenerate_section() with RETRY_MODEL (no thinking budget)
+  5. Write new section file
+  6. Insert chained report row — attempt = MAX(attempt for section) + 1
+  7. Run orchestrator against new report
+  8. Return new report id and orchestrator result
 
 The accept flow:
   1. Mark report as 'accepted', mark all others for this section as 'rejected'
   2. Update sections.accepted_report_id
   3. Load accepted (or latest pending) content for ALL sections of the application
-  4. Recompose cv.md and update applications.cv_markdown
+  4. Parse name and contact string from existing cv_markdown header
+  5. Recompose cv.md using compose_cv_markdown() and update applications.cv_markdown
+
+Attempt numbering:
+  New attempts are always MAX(attempt) + 1 for the section, not parent.attempt + 1.
+  This prevents duplicate attempt numbers when retrying from the same parent report
+  more than once.
 """
 
 import sqlite3
@@ -34,13 +41,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from db.database import get_db, row_to_dict, rows_to_list
-from pipeline.config import OUTPUT_PATH
 from pipeline.judges import orchestrator
 from pipeline.retry import regenerate_section, build_constraint_block
 from pipeline.sections import (
-    SECTION_ORDER,
     compose_cv_markdown,
-    section_file_path,
     write_section_file,
     read_section_file,
 )
@@ -60,10 +64,6 @@ class RetryRequest(BaseModel):
     global_comment: Optional[str] = None
 
 
-class AcceptRequest(BaseModel):
-    pass   # no body required — acceptance is explicit, no payload needed
-
-
 # ── DB helpers ────────────────────────────────────────────────────────────────
 
 def _get_report_or_404(db: sqlite3.Connection, report_id: str) -> dict:
@@ -75,22 +75,18 @@ def _get_report_or_404(db: sqlite3.Connection, report_id: str) -> dict:
     return row_to_dict(row)
 
 
-def _get_evaluations_with_flags(db: sqlite3.Connection, report_id: str) -> list[dict]:
+def _get_evaluations_with_flags(db: sqlite3.Connection, report_id: str) -> list:
     """Return all evaluations for a report, each with their flags nested."""
     eval_rows = db.execute(
-        """SELECT * FROM evaluations
-           WHERE report_id = ?
-           ORDER BY created_at ASC""",
+        "SELECT * FROM evaluations WHERE report_id = ? ORDER BY created_at ASC",
         (report_id,),
     ).fetchall()
 
-    result: list[dict] = []
+    result = []
     for eval_row in eval_rows:
         evaluation = row_to_dict(eval_row)
         flag_rows  = db.execute(
-            """SELECT * FROM flags
-               WHERE evaluation_id = ?
-               ORDER BY start_pos ASC""",
+            "SELECT * FROM flags WHERE evaluation_id = ? ORDER BY start_pos ASC",
             (evaluation["id"],),
         ).fetchall()
         evaluation["flags"] = rows_to_list(flag_rows)
@@ -100,16 +96,16 @@ def _get_evaluations_with_flags(db: sqlite3.Connection, report_id: str) -> list[
 
 
 def _load_section_content_for_application(
-    db:         sqlite3.Connection,
-    app_id:     str,
-    out_dir:    Path,
-) -> dict[str, str]:
+    db:      sqlite3.Connection,
+    app_id:  str,
+    out_dir: Path,
+) -> dict:
     """
     Load the current best content for each section of an application.
 
     Priority per section:
       1. Accepted report file (if accepted_report_id is set)
-      2. Latest pending report file (fallback)
+      2. Latest pending report file by attempt number (fallback)
 
     Returns dict[section_name -> content].
     """
@@ -123,9 +119,8 @@ def _load_section_content_for_application(
         (app_id,),
     ).fetchall()
 
-    # Build a map: section_name -> best file_path
-    seen: set[str] = set()
-    best_paths: dict[str, str] = {}
+    seen:       set  = set()
+    best_paths: dict = {}
 
     for row in section_rows:
         name = row["section_name"]
@@ -145,14 +140,28 @@ def _load_section_content_for_application(
         if row["latest_file_path"]:
             best_paths[name] = row["latest_file_path"]
 
-    content: dict[str, str] = {}
+    content: dict = {}
     for section_name, file_path in best_paths.items():
         try:
             content[section_name] = read_section_file(Path(file_path))
         except FileNotFoundError:
-            pass  # section skipped if file is missing
+            pass
 
     return content
+
+
+def _next_attempt_for_section(db: sqlite3.Connection, section_id: str) -> int:
+    """
+    Return the next attempt number for a section — MAX(attempt) + 1.
+
+    Using MAX rather than parent.attempt + 1 prevents duplicate attempt numbers
+    when retrying from the same parent report more than once.
+    """
+    row = db.execute(
+        "SELECT MAX(attempt) FROM reports WHERE section_id = ?",
+        (section_id,),
+    ).fetchone()
+    return (row[0] or 0) + 1
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -166,14 +175,12 @@ def get_report(
     report      = _get_report_or_404(db, report_id)
     evaluations = _get_evaluations_with_flags(db, report_id)
 
-    # Attach flat list of all flags across all evaluations for UI convenience
     all_flags = [
         flag
         for evaluation in evaluations
         for flag in evaluation["flags"]
     ]
 
-    # Read the generated text from the section file
     generated_text: Optional[str] = None
     try:
         generated_text = read_section_file(Path(report["file_path"]))
@@ -195,11 +202,7 @@ def evaluate_report(
     report_id: str,
     db: sqlite3.Connection = Depends(get_db),
 ):
-    """
-    Run the judge orchestrator against a report.
-    Idempotent in the sense that each call creates new evaluation rows —
-    intended to be called once per report after generation.
-    """
+    """Run the judge orchestrator against a report."""
     report = _get_report_or_404(db, report_id)
 
     try:
@@ -250,7 +253,7 @@ def update_flag(
     if body.status and body.status not in valid_statuses:
         raise HTTPException(
             status_code=422,
-            detail=f"Invalid flag status: {body.status}. Must be one of {valid_statuses}",
+            detail=f"Invalid flag status '{body.status}'. Must be one of {valid_statuses}",
         )
 
     updates: dict = {}
@@ -282,10 +285,9 @@ def accept_report(
     """
     Accept a report as the canonical version for its section.
 
-    1. Marks this report 'accepted', all others for the section 'rejected'
-    2. Updates sections.accepted_report_id
-    3. Recomposes cv.md from all sections' best content
-    4. Updates applications.cv_markdown
+    Recomposes cv.md by parsing name and contact from the existing cv_markdown
+    header rather than querying non-existent columns on the applications table.
+    compose_cv_markdown() accepts a raw contact string for this purpose.
     """
     report = _get_report_or_404(db, report_id)
     app_id       = report["application_id"]
@@ -299,22 +301,18 @@ def accept_report(
            WHERE section_id = ? AND id != ? AND status != 'rejected'""",
         (section_id, report_id),
     )
-
-    # Mark this report as accepted
     db.execute(
         "UPDATE reports SET status = 'accepted' WHERE id = ?",
         (report_id,),
     )
-
-    # Update the section's accepted_report_id
     db.execute(
         "UPDATE sections SET accepted_report_id = ? WHERE id = ?",
         (report_id, section_id),
     )
 
-    # Recompose cv.md from all sections
+    # Load application — only columns that actually exist
     app_row = db.execute(
-        "SELECT output_dir, name, contact FROM applications WHERE id = ?",
+        "SELECT output_dir, cv_markdown FROM applications WHERE id = ?",
         (app_id,),
     ).fetchone()
 
@@ -323,24 +321,22 @@ def accept_report(
 
     out_dir = Path(app_row["output_dir"])
 
+    # Parse name and contact from the existing cv_markdown header.
+    # Line 0: "# Full Name"  →  strip leading "# "
+    # Line 1: "email · phone · location · linkedin"  →  pass raw as contact string
+    # compose_cv_markdown() accepts str for contact and passes it through as-is.
+    name         = ""
+    contact: str = ""
+    existing_md  = app_row["cv_markdown"] or ""
+    if existing_md:
+        md_lines = existing_md.splitlines()
+        if md_lines:
+            name = md_lines[0].lstrip("# ").strip()
+        if len(md_lines) > 1:
+            contact = md_lines[1].strip()
+
     section_content = _load_section_content_for_application(db, app_id, out_dir)
-
-    # name and contact come from cv_markdown parse — read from applications row
-    # We store these implicitly via the composed cv.md; parse them back if needed.
-    # For composition we read from the application's stored cv_markdown header.
-    app_full = db.execute("SELECT cv_markdown FROM applications WHERE id = ?", (app_id,)).fetchone()
-    name    = ""
-    contact: dict = {}
-    if app_full and app_full["cv_markdown"]:
-        lines = app_full["cv_markdown"].splitlines()
-        if lines:
-            name = lines[0].lstrip("# ").strip()
-        if len(lines) > 1:
-            contact = {"raw": lines[1].strip()}   # pass as display string
-
-    # compose_cv_markdown expects contact as a dict — use a simple approach
-    # that preserves the existing contact line without re-parsing
-    composed = compose_cv_markdown(name, contact, section_content)
+    composed        = compose_cv_markdown(name, contact, section_content)
 
     (out_dir / "cv.md").write_text(composed, encoding="utf-8")
     db.execute(
@@ -365,21 +361,15 @@ def retry_report(
     """
     Trigger a retry for a failed report.
 
-    1. Load active flags from the current report
-    2. Build constraint block and formatted_prompt
-    3. Load application context (jd_text, generation_notes, output_dir)
-    4. Call regenerate_section() with the main LLM
-    5. Write new section file
-    6. Insert chained report row
-    7. Run orchestrator against new report
-    8. Return new report summary + orchestrator result
+    Attempt number is derived from MAX(attempt) for the section + 1, not
+    from the parent report's attempt number. This prevents duplicates when
+    the same parent report is retried more than once.
     """
     report = _get_report_or_404(db, report_id)
     app_id       = report["application_id"]
     section_name = report["section_name"]
     section_id   = report["section_id"]
 
-    # Load application context
     app_row = db.execute(
         "SELECT jd_text, generation_notes, output_dir FROM applications WHERE id = ?",
         (app_id,),
@@ -392,7 +382,7 @@ def retry_report(
     generation_notes = app_row["generation_notes"]
     out_dir          = Path(app_row["output_dir"])
 
-    # Load active flags (across all evaluations for this report)
+    # Load active flags for this report
     active_flag_rows = db.execute(
         """SELECT f.type, f.excerpt, f.message, f.start_pos, f.end_pos
            FROM flags f
@@ -404,16 +394,13 @@ def retry_report(
 
     active_flags = rows_to_list(active_flag_rows)
 
-    # Load previous section text
     try:
         previous_text = read_section_file(Path(report["file_path"]))
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Section file not found")
 
-    # Build the formatted prompt that will be stored on the new report
     formatted_prompt = build_constraint_block(active_flags, body.global_comment)
 
-    # Regenerate the section
     try:
         new_text, _, _ = regenerate_section(
             section_name=section_name,
@@ -426,13 +413,13 @@ def retry_report(
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    # Write new section file
     new_report_id = str(uuid.uuid4())
     new_file_path = write_section_file(out_dir, section_name, new_report_id, new_text)
 
-    # Insert chained report row
-    now             = datetime.now().isoformat()
-    new_attempt     = report["attempt"] + 1
+    # ── Attempt number: MAX for section + 1, not parent + 1 ──────────────────
+    # This prevents duplicate attempt numbers when the same parent is retried twice.
+    now         = datetime.now().isoformat()
+    new_attempt = _next_attempt_for_section(db, section_id)
 
     db.execute(
         """INSERT INTO reports
@@ -447,13 +434,12 @@ def retry_report(
         ),
     )
 
-    # Mark current report as rejected (superseded by retry)
+    # Mark the retried report as rejected — superseded by the new one
     db.execute(
         "UPDATE reports SET status = 'rejected' WHERE id = ?",
         (report_id,),
     )
 
-    # Run orchestrator against new report
     orch_result = orchestrator.run(
         report_id=new_report_id,
         section_text=new_text,
