@@ -9,11 +9,11 @@ export const api = {
     return res.json();
   },
 
-  async post(path: string, body: unknown) {
+  async post(path: string, body?: unknown) {
     const res = await fetch(`${API_URL}${path}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      body: body !== undefined ? JSON.stringify(body) : undefined,
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
@@ -29,6 +29,19 @@ export const api = {
       body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`PUT ${path} failed: ${res.status}`);
+    return res.json();
+  },
+
+  async patch(path: string, body: unknown) {
+    const res = await fetch(`${API_URL}${path}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `PATCH ${path} failed: ${res.status}`);
+    }
     return res.json();
   },
 };

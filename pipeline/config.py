@@ -20,13 +20,29 @@ SKILLS_PATH     = CV_LIBRARY_PATH / "skills" / "skills.md"
 META_PATH       = CV_LIBRARY_PATH / "meta" / "meta.md"
 
 # ── Database ───────────────────────────────────────────────────────────────────
-# SQLite — embedded, no server required.
-# Override in .env to point to a different location (e.g. on VPS).
 DB_PATH = os.getenv("DB_PATH", str(REPO_ROOT / "data" / "atat.db"))
 
 # ── LLM ───────────────────────────────────────────────────────────────────────
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "anthropic")
 LLM_MODEL    = os.getenv("LLM_MODEL",    "claude-sonnet-4-6")
+
+# Judge model — cheaper/faster model used for Tier 2 accuracy checks.
+# Defaults to Haiku for Anthropic, gpt-4o-mini for OpenAI.
+JUDGE_MODEL = os.getenv(
+    "JUDGE_MODEL",
+    "claude-haiku-4-5-20251001" if os.getenv("LLM_PROVIDER", "anthropic") == "anthropic"
+    else "gpt-4o-mini",
+)
+
+# Retry model — used for section-level rewrites during human-in-the-loop review.
+# Intentionally cheaper than LLM_MODEL: retries are targeted edits with explicit
+# constraints, not full generation. No thinking budget applied.
+# Defaults to same as JUDGE_MODEL — override to use a mid-tier model if needed.
+RETRY_MODEL = os.getenv("RETRY_MODEL", os.getenv(
+    "JUDGE_MODEL",
+    "claude-haiku-4-5-20251001" if os.getenv("LLM_PROVIDER", "anthropic") == "anthropic"
+    else "gpt-4o-mini",
+))
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 OPENAI_API_KEY    = os.getenv("OPENAI_API_KEY")
