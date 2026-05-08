@@ -8,7 +8,7 @@ import remarkGfm from "remark-gfm";
 
 const API = process.env.NEXT_PUBLIC_API_URL;
 
-type ViewMode = "preview" | "raw" | "pdf" | "reasoning";
+type ViewMode = "preview" | "raw" | "pdf" | "reasoning" | "jd";
 
 const ARRANGEMENT_LABELS: Record<string, string> = {
   remote: "Remote",
@@ -39,8 +39,6 @@ function SectionsPanel({ appId, sections }: { appId: string; sections: any[] }) 
       <div className="flex flex-wrap gap-2">
         {sections.map((section: any) => {
           const accepted = !!section.accepted_report_id;
-          const flagCount = section.latest_report?.active_flags ?? null;
-          const hasEval   = section.latest_report?.status !== "pending" || section.latest_report?.escalated;
 
           return (
             <Link
@@ -250,24 +248,42 @@ function ReasoningPanel({ content, hasReasoning }: { content: string; hasReasoni
   );
 }
 
+// ── JD panel ─────────────────────────────────────────────────────────────────
+
+function JdPanel({ jdText }: { jdText: string }) {
+  if (!jdText) {
+    return (
+      <div className="bg-bg-elevated p-8 min-h-[40vh] flex items-center justify-center">
+        <p className="text-sm text-text-muted">No job description stored for this application.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-bg-elevated p-8 min-h-[40vh]">
+      <p className="text-sm text-text-primary whitespace-pre-wrap leading-relaxed">{jdText}</p>
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function ApplicationPage() {
   const params = useParams();
   const id     = params.id as string;
 
-  const [meta, setMeta]               = useState<any>(null);
-  const [sections, setSections]       = useState<any[]>([]);
-  const [content, setContent]         = useState("");
-  const [edited, setEdited]           = useState("");
-  const [reasoning, setReasoning]     = useState<string>("");
+  const [meta, setMeta]                 = useState<any>(null);
+  const [sections, setSections]         = useState<any[]>([]);
+  const [content, setContent]           = useState("");
+  const [edited, setEdited]             = useState("");
+  const [reasoning, setReasoning]       = useState<string>("");
   const [hasReasoning, setHasReasoning] = useState(false);
-  const [view, setView]               = useState<ViewMode>("preview");
-  const [dirty, setDirty]             = useState(false);
-  const [saving, setSaving]           = useState(false);
-  const [rendering, setRendering]     = useState(false);
-  const [hasPdf, setHasPdf]           = useState(false);
-  const [error, setError]             = useState<string | null>(null);
+  const [view, setView]                 = useState<ViewMode>("preview");
+  const [dirty, setDirty]               = useState(false);
+  const [saving, setSaving]             = useState(false);
+  const [rendering, setRendering]       = useState(false);
+  const [hasPdf, setHasPdf]             = useState(false);
+  const [error, setError]               = useState<string | null>(null);
 
   useEffect(() => { loadData(); }, [id]);
 
@@ -342,12 +358,23 @@ export default function ApplicationPage() {
     if (res.ok) setMeta(await res.json());
   }
 
+  const hasJd = !!meta?.jd_text;
+
   const views: ViewMode[] = [
     "preview",
     "raw",
-    ...(hasPdf ? (["pdf"] as ViewMode[]) : []),
+    ...(hasPdf    ? (["pdf"] as ViewMode[]) : []),
+    ...(hasJd     ? (["jd"]  as ViewMode[]) : []),
     "reasoning",
   ];
+
+  const VIEW_LABELS: Record<ViewMode, string> = {
+    preview:   "Preview",
+    raw:       "Raw",
+    pdf:       "PDF",
+    jd:        "Job Description",
+    reasoning: "🧠 Reasoning",
+  };
 
   return (
     <div className="space-y-6">
@@ -396,17 +423,16 @@ export default function ApplicationPage() {
 
       {meta && <RoleDetails meta={meta} onSave={handleRoleDetailsSave} />}
 
-      {/* Section review entry points */}
       {sections.length > 0 && <SectionsPanel appId={id} sections={sections} />}
 
       {/* View toggle */}
       <div className="flex gap-1 bg-bg-surface rounded-lg p-1 w-fit border border-bg-border">
         {views.map((v) => (
           <button key={v} onClick={() => setView(v)}
-            className={`px-3 py-1 text-xs font-medium rounded-md capitalize transition-colors ${
+            className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
               view === v ? "bg-white text-text-primary shadow-sm" : "text-text-secondary hover:text-text-primary"
             }`}>
-            {v === "reasoning" ? "🧠 Reasoning" : v}
+            {VIEW_LABELS[v]}
           </button>
         ))}
       </div>
@@ -426,6 +452,9 @@ export default function ApplicationPage() {
         )}
         {view === "pdf" && hasPdf && (
           <iframe src={`${API}/applications/${id}/pdf`} className="w-full h-[85vh]" title="CV PDF" />
+        )}
+        {view === "jd" && (
+          <JdPanel jdText={meta?.jd_text ?? ""} />
         )}
         {view === "reasoning" && (
           <ReasoningPanel content={reasoning} hasReasoning={hasReasoning} />
