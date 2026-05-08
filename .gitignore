@@ -10,6 +10,9 @@ jds/
 # Database — local data, never committed
 data/
 
+# Demo folder — intentionally committed (fictional data only, safe for git)
+# demo/atat.db and demo/cv-library/ are seed assets, not personal data
+
 # Personal prompt additions - never commit
 prompts/personal_additions.md
 

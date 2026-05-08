@@ -24,6 +24,9 @@ _ENV_FILE  = _REPO_ROOT / ".env"
 # Sentinel pattern for masked keys — never write these to disk
 _MASK_PATTERN = re.compile(r'^.{2,8}•+.{2,8}$')
 
+# Fields that are locked in demo mode — overridden by convention, not .env
+_DEMO_LOCKED_FIELDS = {"cv_library_path", "output_path"}
+
 
 # ── Models ────────────────────────────────────────────────────────────────────
 
@@ -37,6 +40,7 @@ class Settings(BaseModel):
     thinking_budget:   int
     render_pdf:        bool
     temperature:       float
+    demo_mode:         bool = False
 
 
 class SettingsUpdate(BaseModel):
@@ -96,7 +100,7 @@ def get_settings():
     from pipeline.config import (
         LLM_PROVIDER, LLM_MODEL, CV_LIBRARY_PATH, OUTPUT_PATH,
         THINKING_BUDGET, RENDER_PDF, TEMPERATURE,
-        ANTHROPIC_API_KEY, OPENAI_API_KEY,
+        ANTHROPIC_API_KEY, OPENAI_API_KEY, DEMO_MODE,
     )
     return Settings(
         llm_provider      = LLM_PROVIDER,
@@ -108,14 +112,26 @@ def get_settings():
         thinking_budget   = THINKING_BUDGET,
         render_pdf        = RENDER_PDF,
         temperature       = TEMPERATURE,
+        demo_mode         = DEMO_MODE,
     )
 
 
 @router.patch("")
 def update_settings(body: SettingsUpdate):
+    from pipeline.config import DEMO_MODE
+
     updates = body.model_dump(exclude_none=True)
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
+
+    # In demo mode, path fields are convention-based and cannot be overridden via settings
+    if DEMO_MODE:
+        locked = _DEMO_LOCKED_FIELDS.intersection(updates.keys())
+        if locked:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Path settings are locked in demo mode: {', '.join(sorted(locked))}",
+            )
 
     key_map = {
         "llm_provider":      "LLM_PROVIDER",
