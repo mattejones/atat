@@ -7,20 +7,30 @@ load_dotenv()
 # ── Repo root — anchored to this file's location, not the working directory ───
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+# ── Demo mode ─────────────────────────────────────────────────────────────────
+# When True, all path-sensitive config is overridden to point at ./demo/.
+# Set DEMO_MODE=true in .env to activate. See ./demo/ for seed data and cv-library.
+DEMO_MODE = os.getenv("DEMO_MODE", "false").lower() == "true"
+
 # ── Paths ─────────────────────────────────────────────────────────────────────
-CV_LIBRARY_PATH = Path(os.getenv("CV_LIBRARY_PATH", str(REPO_ROOT / "../cv-library"))).resolve()
-JDS_PATH        = Path(os.getenv("JDS_PATH",        str(REPO_ROOT / "jds"))).resolve()
-OUTPUT_PATH     = Path(os.getenv("OUTPUT_PATH",     str(REPO_ROOT / "output"))).resolve()
-PROMPTS_PATH    = REPO_ROOT / "prompts"
+if DEMO_MODE:
+    # Convention-based: always relative to repo root, no additional config required.
+    CV_LIBRARY_PATH = (REPO_ROOT / "demo" / "cv-library").resolve()
+    DB_PATH         = str((REPO_ROOT / "demo" / "atat.db").resolve())
+    OUTPUT_PATH     = (REPO_ROOT / "demo" / "output").resolve()
+else:
+    CV_LIBRARY_PATH = Path(os.getenv("CV_LIBRARY_PATH", str(REPO_ROOT / "../cv-library"))).resolve()
+    DB_PATH         = os.getenv("DB_PATH", str(REPO_ROOT / "data" / "atat.db"))
+    OUTPUT_PATH     = Path(os.getenv("OUTPUT_PATH", str(REPO_ROOT / "output"))).resolve()
+
+JDS_PATH     = Path(os.getenv("JDS_PATH", str(REPO_ROOT / "jds"))).resolve()
+PROMPTS_PATH = REPO_ROOT / "prompts"
 
 # Derived library paths — never hardcoded elsewhere
 EXPERIENCE_PATH = CV_LIBRARY_PATH / "experience"
 PERSONAS_PATH   = CV_LIBRARY_PATH / "personas"
 SKILLS_PATH     = CV_LIBRARY_PATH / "skills" / "skills.md"
 META_PATH       = CV_LIBRARY_PATH / "meta" / "meta.md"
-
-# ── Database ───────────────────────────────────────────────────────────────────
-DB_PATH = os.getenv("DB_PATH", str(REPO_ROOT / "data" / "atat.db"))
 
 # ── LLM ───────────────────────────────────────────────────────────────────────
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "anthropic")

@@ -14,15 +14,28 @@ interface Settings {
   thinking_budget:   number;
   render_pdf:        boolean;
   temperature:       number;
+  demo_mode:         boolean;
 }
 
 type SaveState = "idle" | "saving" | "saved" | "error";
 
-function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+function Field({ label, hint, children, locked }: {
+  label: string;
+  hint?: string;
+  children: React.ReactNode;
+  locked?: boolean;
+}) {
   return (
     <div className="grid grid-cols-3 gap-4 py-4 border-b border-bg-border last:border-0">
       <div>
-        <p className="text-sm font-medium text-text-primary">{label}</p>
+        <p className="text-sm font-medium text-text-primary flex items-center gap-1.5">
+          {label}
+          {locked && (
+            <span className="text-xs font-normal text-amber-600 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">
+              demo
+            </span>
+          )}
+        </p>
         {hint && <p className="text-xs text-text-muted mt-0.5">{hint}</p>}
       </div>
       <div className="col-span-2">{children}</div>
@@ -59,6 +72,17 @@ function MaskedKeyInput({
   );
 }
 
+function LockedPathInput({ value }: { value: string }) {
+  return (
+    <input
+      type="text"
+      value={value}
+      disabled
+      className="w-full px-3 py-1.5 bg-bg-base border border-bg-border rounded-lg text-sm text-text-muted font-mono cursor-not-allowed opacity-60"
+    />
+  );
+}
+
 export default function SettingsPage() {
   const [settings, setSettings]   = useState<Settings | null>(null);
   const [form, setForm]           = useState<Partial<Settings>>({});
@@ -79,14 +103,23 @@ export default function SettingsPage() {
       .catch(() => setError("Could not load settings — is the API running?"));
   }, []);
 
+  const demoMode = settings?.demo_mode ?? false;
+
   async function save() {
     setSaveState("saving");
     setError(null);
     try {
-      // Base payload — never includes key fields
+      // Base payload — never includes key fields or read-only fields
       const payload: Record<string, unknown> = { ...form };
       delete payload.anthropic_api_key;
       delete payload.openai_api_key;
+      delete payload.demo_mode;
+
+      // Strip demo-locked fields — backend will reject them anyway, but cleaner not to send
+      if (demoMode) {
+        delete payload.cv_library_path;
+        delete payload.output_path;
+      }
 
       // Only include keys if user typed something new and non-empty
       const anthropic = keys.anthropic.trim();
@@ -186,22 +219,38 @@ export default function SettingsPage() {
             />
           </Field>
 
-          <Field label="CV Library Path" hint="Path to your cv-library repo">
-            <input
-              type="text"
-              value={(form.cv_library_path ?? settings.cv_library_path) as string}
-              onChange={(e) => set("cv_library_path", e.target.value)}
-              className="w-full px-3 py-1.5 bg-white border border-bg-border rounded-lg text-sm text-text-primary font-mono focus:outline-none focus:ring-2 focus:ring-accent/40"
-            />
+          <Field
+            label="CV Library Path"
+            hint={demoMode ? "Fixed to demo/cv-library/ in demo mode" : "Path to your cv-library repo"}
+            locked={demoMode}
+          >
+            {demoMode ? (
+              <LockedPathInput value={settings.cv_library_path} />
+            ) : (
+              <input
+                type="text"
+                value={(form.cv_library_path ?? settings.cv_library_path) as string}
+                onChange={(e) => set("cv_library_path", e.target.value)}
+                className="w-full px-3 py-1.5 bg-white border border-bg-border rounded-lg text-sm text-text-primary font-mono focus:outline-none focus:ring-2 focus:ring-accent/40"
+              />
+            )}
           </Field>
 
-          <Field label="Output Path" hint="Where generated CVs are saved">
-            <input
-              type="text"
-              value={(form.output_path ?? settings.output_path) as string}
-              onChange={(e) => set("output_path", e.target.value)}
-              className="w-full px-3 py-1.5 bg-white border border-bg-border rounded-lg text-sm text-text-primary font-mono focus:outline-none focus:ring-2 focus:ring-accent/40"
-            />
+          <Field
+            label="Output Path"
+            hint={demoMode ? "Fixed to demo/output/ in demo mode" : "Where generated CVs are saved"}
+            locked={demoMode}
+          >
+            {demoMode ? (
+              <LockedPathInput value={settings.output_path} />
+            ) : (
+              <input
+                type="text"
+                value={(form.output_path ?? settings.output_path) as string}
+                onChange={(e) => set("output_path", e.target.value)}
+                className="w-full px-3 py-1.5 bg-white border border-bg-border rounded-lg text-sm text-text-primary font-mono focus:outline-none focus:ring-2 focus:ring-accent/40"
+              />
+            )}
           </Field>
 
           <Field label="Thinking Budget" hint="Extended thinking tokens (0 to disable)">
