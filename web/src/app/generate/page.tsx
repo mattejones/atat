@@ -8,7 +8,6 @@ const API = process.env.NEXT_PUBLIC_API_URL;
 type InputMode = "paste" | "url";
 
 const LOADING_MESSAGES = [
-  // Genuine
   "Reading the job description…",
   "Auditing your experience library…",
   "Selecting the best persona…",
@@ -17,7 +16,6 @@ const LOADING_MESSAGES = [
   "Calibrating tone and register…",
   "Writing your tailored CV…",
   "Checking for forbidden words…",
-  // Fun
   "Actually hallucinating (don't worry, we caught it)…",
   "Applying on your behalf without consent…",
   "Submitting Elon Musk's CV by mistake…",
@@ -42,8 +40,8 @@ const LOADING_MESSAGES = [
 // ── Loading overlay ───────────────────────────────────────────────────────────
 
 function GeneratingOverlay({ company, role }: { company: string; role: string }) {
-  const [tick, setTick]    = useState(0);
-  const [startIdx]         = useState(() => Math.floor(Math.random() * LOADING_MESSAGES.length));
+  const [tick, setTick] = useState(0);
+  const [startIdx]      = useState(() => Math.floor(Math.random() * LOADING_MESSAGES.length));
 
   useEffect(() => {
     const interval = setInterval(() => setTick((t) => t + 1), 5000);
@@ -60,7 +58,6 @@ function GeneratingOverlay({ company, role }: { company: string; role: string })
           <div className="w-3 h-3 rounded-full bg-accent" />
         </div>
       </div>
-
       <div className="text-center space-y-2 max-w-sm">
         <p className="text-lg font-semibold text-text-primary">Generating your CV</p>
         {(company || role) && (
@@ -72,10 +69,64 @@ function GeneratingOverlay({ company, role }: { company: string; role: string })
         )}
         <p key={tick} className="text-sm text-text-muted mt-4 animate-fade-in">{message}</p>
       </div>
-
       <p className="text-xs text-text-muted">
         This usually takes 30–60 seconds with extended thinking enabled.
       </p>
+    </div>
+  );
+}
+
+// ── Previous notes ────────────────────────────────────────────────────────────
+
+interface PreviousNote {
+  text:    string;
+  company: string;
+  role:    string;
+}
+
+function PreviousNotes({ onSelect }: { onSelect: (text: string) => void }) {
+  const [notes, setNotes] = useState<PreviousNote[]>([]);
+  const [open, setOpen]   = useState(false);
+
+  useEffect(() => {
+    fetch(`${API}/applications/recent-notes`)
+      .then((r) => r.json())
+      .then((data) => setNotes(Array.isArray(data) ? data : []))
+      .catch(() => {});
+  }, []);
+
+  if (notes.length === 0) return null;
+
+  return (
+    <div className="border border-bg-border rounded-lg overflow-hidden">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="w-full flex items-center justify-between px-4 py-2.5 bg-bg-surface hover:bg-bg-elevated transition-colors text-left"
+      >
+        <span className="text-xs font-medium text-text-secondary">
+          Previous instructions
+        </span>
+        <span className="text-text-muted text-xs">{open ? "▲" : "▼"}</span>
+      </button>
+
+      {open && (
+        <div className="divide-y divide-bg-border bg-bg-elevated">
+          {notes.map((note, i) => (
+            <button
+              key={i}
+              onClick={() => onSelect(note.text)}
+              className="w-full text-left px-4 py-3 hover:bg-bg-surface transition-colors group"
+            >
+              <p className="text-[10px] text-text-muted mb-1">
+                {note.company} — {note.role}
+              </p>
+              <p className="text-xs text-text-secondary group-hover:text-text-primary transition-colors leading-relaxed">
+                {note.text}
+              </p>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -85,15 +136,15 @@ function GeneratingOverlay({ company, role }: { company: string; role: string })
 export default function GeneratePage() {
   const router = useRouter();
 
-  const [mode, setMode]           = useState<InputMode>("paste");
-  const [jdText, setJdText]       = useState("");
-  const [url, setUrl]             = useState("");
-  const [company, setCompany]     = useState("");
-  const [role, setRole]           = useState("");
-  const [notes, setNotes]         = useState("");
+  const [mode, setMode]             = useState<InputMode>("paste");
+  const [jdText, setJdText]         = useState("");
+  const [url, setUrl]               = useState("");
+  const [company, setCompany]       = useState("");
+  const [role, setRole]             = useState("");
+  const [notes, setNotes]           = useState("");
   const [generating, setGenerating] = useState(false);
-  const [scraping, setScraping]   = useState(false);
-  const [error, setError]         = useState<string | null>(null);
+  const [scraping, setScraping]     = useState(false);
+  const [error, setError]           = useState<string | null>(null);
 
   async function fetchFromUrl() {
     if (!url.trim()) return;
@@ -125,7 +176,7 @@ export default function GeneratePage() {
     setGenerating(true);
     try {
       const res = await fetch(`${API}/generate`, {
-        method: "POST",
+        method:  "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           jd_text:          jdText,
@@ -171,7 +222,7 @@ export default function GeneratePage() {
           </div>
         </div>
 
-        {/* Mode toggle */}
+        {/* Mode toggle + JD input */}
         <div className="space-y-3">
           <div className="flex gap-1 bg-bg-surface rounded-lg p-1 w-fit border border-bg-border">
             {(["paste", "url"] as InputMode[]).map((m) => (
@@ -193,9 +244,9 @@ export default function GeneratePage() {
                   className="flex-1 px-3 py-2 bg-bg-elevated border border-bg-border rounded-lg text-sm text-text-primary placeholder-text-muted focus:outline-none focus:ring-2 focus:ring-accent/40" />
                 <button onClick={fetchFromUrl} disabled={scraping || !url.trim() || generating}
                   className="px-4 py-2 bg-accent text-white text-sm font-medium rounded-lg hover:bg-accent-dim transition-colors disabled:opacity-50 flex items-center gap-2">
-                  {scraping ? (
-                    <><span className="w-3 h-3 border border-white/30 border-t-white rounded-full animate-spin" />Fetching…</>
-                  ) : "Fetch"}
+                  {scraping
+                    ? <><span className="w-3 h-3 border border-white/30 border-t-white rounded-full animate-spin" />Fetching…</>
+                    : "Fetch"}
                 </button>
               </div>
               <p className="text-xs text-text-muted">Works best with direct job posting URLs. LinkedIn may block access.</p>
@@ -221,25 +272,29 @@ export default function GeneratePage() {
           )}
         </div>
 
-        {/* Notes */}
-        <div className="space-y-1">
-          <label className="text-xs font-medium text-text-secondary uppercase tracking-wide">
-            Notes for the AI{" "}
-            <span className="normal-case font-normal text-text-muted ml-1">optional</span>
-          </label>
-          <textarea value={notes} onChange={(e) => setNotes(e.target.value)}
-            placeholder={`e.g. "This role clearly values n8n experience — highlight integration work across the library."`}
-            rows={3} disabled={generating}
-            className="w-full px-3 py-2 bg-bg-elevated border border-bg-border rounded-lg text-sm text-text-primary placeholder-text-muted focus:outline-none focus:ring-2 focus:ring-accent/40 resize-none leading-relaxed disabled:opacity-50" />
-          <p className="text-xs text-text-muted">Guidance for the model on this specific application. Stored for reference.</p>
+        {/* Notes for the AI */}
+        <div className="space-y-2">
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-text-secondary uppercase tracking-wide">
+              Notes for the AI{" "}
+              <span className="normal-case font-normal text-text-muted ml-1">optional</span>
+            </label>
+            <textarea value={notes} onChange={(e) => setNotes(e.target.value)}
+              placeholder={`e.g. "This role clearly values n8n experience — highlight integration work across the library."`}
+              rows={3} disabled={generating}
+              className="w-full px-3 py-2 bg-bg-elevated border border-bg-border rounded-lg text-sm text-text-primary placeholder-text-muted focus:outline-none focus:ring-2 focus:ring-accent/40 resize-none leading-relaxed disabled:opacity-50" />
+          </div>
+          <PreviousNotes onSelect={setNotes} />
         </div>
 
         {error && (
-          <div className="px-4 py-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">{error}</div>
+          <div className="px-4 py-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+            {error}
+          </div>
         )}
 
         <button onClick={handleGenerate} disabled={generating || !jdText.trim()}
-          className="w-full py-3 bg-accent text-white font-medium rounded-lg hover:bg-accent-dim transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+          className="w-full py-3 bg-accent text-white font-medium rounded-lg hover:bg-accent-dim transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
           Generate CV
         </button>
       </div>

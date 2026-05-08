@@ -7,11 +7,15 @@ export default function Nav() {
   const path = usePathname();
 
   const links = [
-    { href: "/",          label: "Applications" },
-    { href: "/generate",  label: "New"          },
-    { href: "/settings",  label: "Settings"     },
-    { href: "/about",     label: "About"        },
+    { href: "/",         label: "Applications" },
+    { href: "/generate", label: "New"          },
+    { href: "/prompts",  label: "Prompts"      },
+    { href: "/settings", label: "Settings"     },
+    { href: "/about",    label: "About"        },
   ];
+
+  const isActive = (href: string) =>
+    href === "/" ? path === "/" : path.startsWith(href);
 
   return (
     <nav className="border-b border-bg-border bg-bg-surface">
@@ -29,7 +33,7 @@ export default function Nav() {
               key={href}
               href={href}
               className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
-                path === href
+                isActive(href)
                   ? "text-text-primary bg-bg-elevated font-medium"
                   : "text-text-secondary hover:text-text-primary hover:bg-bg-elevated"
               }`}
