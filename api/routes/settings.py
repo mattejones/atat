@@ -33,6 +33,8 @@ _DEMO_LOCKED_FIELDS = {"cv_library_path", "output_path"}
 class Settings(BaseModel):
     llm_provider:             str
     llm_model:                str
+    judge_model:              str
+    retry_model:              str
     anthropic_api_key:        Optional[str] = None
     openai_api_key:           Optional[str] = None
     cv_library_path:          str
@@ -49,6 +51,8 @@ class Settings(BaseModel):
 class SettingsUpdate(BaseModel):
     llm_provider:             Optional[str]   = None
     llm_model:                Optional[str]   = None
+    judge_model:              Optional[str]   = None
+    retry_model:              Optional[str]   = None
     anthropic_api_key:        Optional[str]   = None
     openai_api_key:           Optional[str]   = None
     cv_library_path:          Optional[str]   = None
@@ -104,7 +108,8 @@ def _write_env_value(key: str, value: str) -> None:
 @router.get("", response_model=Settings)
 def get_settings():
     from pipeline.config import (
-        LLM_PROVIDER, LLM_MODEL, CV_LIBRARY_PATH, OUTPUT_PATH,
+        LLM_PROVIDER, LLM_MODEL, JUDGE_MODEL, RETRY_MODEL,
+        CV_LIBRARY_PATH, OUTPUT_PATH,
         THINKING_BUDGET, RENDER_PDF, TEMPERATURE,
         ANTHROPIC_API_KEY, OPENAI_API_KEY, DEMO_MODE,
         AUTO_GHOST_ENABLED, AUTO_GHOST_DAYS, SCHEDULER_INTERVAL_HOURS,
@@ -112,6 +117,8 @@ def get_settings():
     return Settings(
         llm_provider             = LLM_PROVIDER,
         llm_model                = LLM_MODEL,
+        judge_model              = JUDGE_MODEL,
+        retry_model              = RETRY_MODEL,
         anthropic_api_key        = _mask(ANTHROPIC_API_KEY),
         openai_api_key           = _mask(OPENAI_API_KEY),
         cv_library_path          = str(CV_LIBRARY_PATH),
@@ -134,7 +141,6 @@ def update_settings(body: SettingsUpdate):
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
 
-    # In demo mode, path fields are convention-based and cannot be overridden via settings
     if DEMO_MODE:
         locked = _DEMO_LOCKED_FIELDS.intersection(updates.keys())
         if locked:
@@ -146,6 +152,8 @@ def update_settings(body: SettingsUpdate):
     key_map = {
         "llm_provider":             "LLM_PROVIDER",
         "llm_model":                "LLM_MODEL",
+        "judge_model":              "JUDGE_MODEL",
+        "retry_model":              "RETRY_MODEL",
         "anthropic_api_key":        "ANTHROPIC_API_KEY",
         "openai_api_key":           "OPENAI_API_KEY",
         "cv_library_path":          "CV_LIBRARY_PATH",
@@ -158,7 +166,6 @@ def update_settings(body: SettingsUpdate):
         "scheduler_interval_hours": "SCHEDULER_INTERVAL_HOURS",
     }
 
-    # API key fields — skip if empty or masked
     key_fields = {"anthropic_api_key", "openai_api_key"}
 
     written = []
@@ -169,7 +176,6 @@ def update_settings(body: SettingsUpdate):
         if not env_key:
             continue
 
-        # Never write masked or empty key values back to disk
         if field in key_fields:
             str_value = str(value).strip()
             if not str_value or _is_masked(str_value):

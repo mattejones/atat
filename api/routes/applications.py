@@ -213,6 +213,46 @@ def list_applications(
     return _with_applied_date(rows, db)
 
 
+@router.get("/recent-notes")
+def get_recent_notes(
+    limit: int = 10,
+    db: sqlite3.Connection = Depends(get_db),
+):
+    """
+    Return the most recent distinct generation notes for display on the
+    New Application page. Lets users re-use previous AI instructions.
+
+    Declared before /{app_id} to prevent FastAPI matching 'recent-notes'
+    as an app_id path parameter.
+    """
+    rows = db.execute(
+        """
+        SELECT generation_notes AS text, company, role
+        FROM applications
+        WHERE generation_notes IS NOT NULL
+          AND trim(generation_notes) != ''
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+
+    # Deduplicate by note text, keeping the most recent company/role context
+    seen:   set      = set()
+    result: list     = []
+    for row in rows:
+        text = row["text"].strip()
+        if text not in seen:
+            seen.add(text)
+            result.append({
+                "text":    text,
+                "company": row["company"],
+                "role":    row["role"],
+            })
+
+    return result
+
+
 @router.get("/{app_id}")
 def get_application(app_id: str, db: sqlite3.Connection = Depends(get_db)):
     row = db.execute("SELECT * FROM applications WHERE id = ?", (app_id,)).fetchone()
@@ -477,7 +517,6 @@ def upsert_applied_date(
     if not db.execute("SELECT 1 FROM applications WHERE id = ?", (app_id,)).fetchone():
         raise HTTPException(status_code=404, detail="Application not found")
 
-    # Delete any existing applied date first
     db.execute(
         "DELETE FROM application_dates WHERE application_id = ? AND date_type = 'applied'",
         (app_id,)

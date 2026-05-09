@@ -7,6 +7,8 @@ const API = process.env.NEXT_PUBLIC_API_URL;
 interface Settings {
   llm_provider:             string;
   llm_model:                string;
+  judge_model:              string;
+  retry_model:              string;
   anthropic_api_key:        string | null;
   openai_api_key:           string | null;
   cv_library_path:          string;
@@ -51,6 +53,17 @@ function SectionHeading({ children }: { children: React.ReactNode }) {
     <h2 className="text-xs font-semibold text-text-muted uppercase tracking-wide pt-2 pb-1">
       {children}
     </h2>
+  );
+}
+
+function ModelInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <input
+      type="text"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="w-full px-3 py-1.5 bg-white border border-bg-border rounded-lg text-sm text-text-primary font-mono focus:outline-none focus:ring-2 focus:ring-accent/40"
+    />
   );
 }
 
@@ -198,12 +211,24 @@ export default function SettingsPage() {
                 </select>
               </Field>
 
-              <Field label="Model" hint="Model identifier for CV generation">
-                <input
-                  type="text"
+              <Field label="Generation model" hint="Used for full CV generation — extended thinking applied here">
+                <ModelInput
                   value={(form.llm_model ?? settings.llm_model) as string}
-                  onChange={(e) => set("llm_model", e.target.value)}
-                  className="w-full px-3 py-1.5 bg-white border border-bg-border rounded-lg text-sm text-text-primary font-mono focus:outline-none focus:ring-2 focus:ring-accent/40"
+                  onChange={(v) => set("llm_model", v)}
+                />
+              </Field>
+
+              <Field label="Judge model" hint="Used for Tier 2 accuracy checks — should be cheaper and faster than the generation model">
+                <ModelInput
+                  value={(form.judge_model ?? settings.judge_model) as string}
+                  onChange={(v) => set("judge_model", v)}
+                />
+              </Field>
+
+              <Field label="Retry model" hint="Used for section-level rewrites during review — no thinking budget applied">
+                <ModelInput
+                  value={(form.retry_model ?? settings.retry_model) as string}
+                  onChange={(v) => set("retry_model", v)}
                 />
               </Field>
 
@@ -229,7 +254,7 @@ export default function SettingsPage() {
                 />
               </Field>
 
-              <Field label="Thinking Budget" hint="Extended thinking tokens (0 to disable)">
+              <Field label="Thinking budget" hint="Extended thinking tokens for the generation model (0 to disable)">
                 <div className="flex items-center gap-3">
                   <input
                     type="number"

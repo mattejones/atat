@@ -11,7 +11,11 @@ Endpoints:
   PUT  /prompts/{name:path}        — write prompt content by slug
   GET  /prompts/{name:path}/signals — surface relevant DB feedback as inspiration
 
-Security: CORS is locked to localhost:3000. Never expose publicly.
+Security: CORS is locked to localhost. Never expose publicly.
+
+system: bool — marks prompts that contain JSON schema or output format
+  constraints. Editing structure rather than content in these prompts
+  may break generation or PDF rendering.
 """
 
 import sqlite3
@@ -36,62 +40,69 @@ _REGISTRY: list[dict] = [
         "label":       "CV Generation",
         "description": "Main system prompt for CV generation. Controls reasoning steps, output schema, content rules, and writing quality.",
         "personal":    False,
+        "system":      True,
     },
     {
         "slug":        "personal_additions",
         "label":       "Personal Additions",
         "description": "Personal instructions appended to the CV generation prompt. Gitignored — not committed to the repo.",
         "personal":    True,
+        "system":      False,
     },
     {
         "slug":        "judge_accuracy",
         "label":       "Judge — Accuracy",
         "description": "System prompt for the Tier 2 LLM accuracy judge. Defines what counts as an unsupported claim and the expected response schema.",
         "personal":    False,
+        "system":      True,
     },
     {
         "slug":        "retry_system",
         "label":       "Retry — System",
         "description": "System prompt for section-level retries. Controls the retry model's role, constraints, and output expectations.",
         "personal":    False,
+        "system":      True,
     },
     {
         "slug":        "retry_sections/profile",
         "label":       "Retry — Profile section",
         "description": "Return format instruction injected into the retry prompt for the profile section.",
         "personal":    False,
+        "system":      True,
     },
     {
         "slug":        "retry_sections/experience",
         "label":       "Retry — Experience section",
         "description": "Return format instruction injected into the retry prompt for the experience section.",
         "personal":    False,
+        "system":      True,
     },
     {
         "slug":        "retry_sections/skills",
         "label":       "Retry — Skills section",
         "description": "Return format instruction injected into the retry prompt for the skills section.",
         "personal":    False,
+        "system":      True,
     },
     {
         "slug":        "retry_sections/education",
         "label":       "Retry — Education section",
         "description": "Return format instruction injected into the retry prompt for the education section.",
         "personal":    False,
+        "system":      True,
     },
     {
         "slug":        "retry_sections/certifications",
         "label":       "Retry — Certifications section",
         "description": "Return format instruction injected into the retry prompt for the certifications section.",
         "personal":    False,
+        "system":      True,
     },
 ]
 
 _REGISTRY_BY_SLUG = {p["slug"]: p for p in _REGISTRY}
 
 # ── Signal source mapping ─────────────────────────────────────────────────────
-# Maps each prompt slug to the list of signal queries to run.
-# The frontend renders whatever comes back — no special-casing per slug.
 
 _SIGNAL_SOURCES: dict[str, list[str]] = {
     "cv_generation":                  ["application_notes", "common_flags"],
@@ -126,7 +137,6 @@ def _section_from_slug(slug: str) -> Optional[str]:
 # ── Signal fetchers ───────────────────────────────────────────────────────────
 
 def _fetch_application_notes(db: sqlite3.Connection) -> list[dict]:
-    """Recent distinct user notes from applications."""
     rows = db.execute(
         """
         SELECT DISTINCT notes, company, role
@@ -148,7 +158,6 @@ def _fetch_application_notes(db: sqlite3.Connection) -> list[dict]:
 
 
 def _fetch_common_flags(db: sqlite3.Connection) -> list[dict]:
-    """All flag messages grouped by frequency — patterns worth encoding in the generation prompt."""
     rows = db.execute(
         """
         SELECT message, type, COUNT(*) as count
@@ -170,7 +179,6 @@ def _fetch_common_flags(db: sqlite3.Connection) -> list[dict]:
 
 
 def _fetch_flag_patterns(db: sqlite3.Connection) -> list[dict]:
-    """Accuracy-specific flag patterns — most relevant for tuning judge_accuracy prompt."""
     rows = db.execute(
         """
         SELECT message, type, COUNT(*) as count
@@ -181,7 +189,6 @@ def _fetch_flag_patterns(db: sqlite3.Connection) -> list[dict]:
         LIMIT 10
         """
     ).fetchall()
-    # Fall back to all types if no accuracy flags yet
     if not rows:
         return _fetch_common_flags(db)
     return [
@@ -196,7 +203,6 @@ def _fetch_flag_patterns(db: sqlite3.Connection) -> list[dict]:
 
 
 def _fetch_actioned_flags(db: sqlite3.Connection) -> list[dict]:
-    """Flags that were acted on — most impactful issues that led to retries."""
     rows = db.execute(
         """
         SELECT f.message, f.type, f.user_comment, COUNT(*) as count
@@ -222,7 +228,6 @@ def _fetch_actioned_flags(db: sqlite3.Connection) -> list[dict]:
 
 
 def _fetch_actioned_flags_by_section(db: sqlite3.Connection, section_name: str) -> list[dict]:
-    """Actioned flags filtered to a specific section — for section-level retry prompts."""
     rows = db.execute(
         """
         SELECT f.message, f.type, f.user_comment, COUNT(*) as count
@@ -237,7 +242,6 @@ def _fetch_actioned_flags_by_section(db: sqlite3.Connection, section_name: str) 
         """,
         (section_name,),
     ).fetchall()
-    # Fall back to all sections if this section has no data yet
     if not rows:
         return _fetch_actioned_flags(db)
     results = []
@@ -255,7 +259,6 @@ def _fetch_actioned_flags_by_section(db: sqlite3.Connection, section_name: str) 
 
 
 def _fetch_retry_comments(db: sqlite3.Connection) -> list[dict]:
-    """Global comments written before retries — direct user feedback on what was wrong."""
     rows = db.execute(
         """
         SELECT DISTINCT r.global_comment, r.section_name, a.company, a.role
@@ -279,7 +282,6 @@ def _fetch_retry_comments(db: sqlite3.Connection) -> list[dict]:
 
 
 def _fetch_retry_comments_by_section(db: sqlite3.Connection, section_name: str) -> list[dict]:
-    """Retry comments filtered to a specific section."""
     rows = db.execute(
         """
         SELECT DISTINCT r.global_comment, a.company, a.role
@@ -324,6 +326,7 @@ class PromptMeta(BaseModel):
     label:       str
     description: str
     personal:    bool
+    system:      bool
     exists:      bool
 
 
@@ -332,6 +335,7 @@ class PromptContent(BaseModel):
     label:    str
     content:  str
     personal: bool
+    system:   bool
 
 
 class PromptUpdate(BaseModel):
@@ -357,6 +361,7 @@ def list_prompts(db: sqlite3.Connection = Depends(get_db)):
             label=entry["label"],
             description=entry["description"],
             personal=entry["personal"],
+            system=entry["system"],
             exists=path.exists(),
         ))
     return result
@@ -364,7 +369,6 @@ def list_prompts(db: sqlite3.Connection = Depends(get_db)):
 
 @router.get("/{name:path}/signals", response_model=list[Signal])
 def get_signals(name: str, db: sqlite3.Connection = Depends(get_db)):
-    """Return feedback signals from the DB relevant to this prompt."""
     if name not in _REGISTRY_BY_SLUG:
         raise HTTPException(status_code=404, detail=f"Unknown prompt: {name!r}")
 
@@ -378,9 +382,8 @@ def get_signals(name: str, db: sqlite3.Connection = Depends(get_db)):
             try:
                 signals.extend(fetcher(db, section))
             except Exception:
-                pass  # silently skip — signals are advisory, never blocking
+                pass
 
-    # Deduplicate by text, keeping the highest count
     seen: dict[str, dict] = {}
     for s in signals:
         key = s["text"].strip()
@@ -404,6 +407,7 @@ def get_prompt(name: str):
         label=entry["label"],
         content=content,
         personal=entry["personal"],
+        system=entry["system"],
     )
 
 
