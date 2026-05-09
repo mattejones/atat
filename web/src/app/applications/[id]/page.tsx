@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import ReactMarkdown from "react-markdown";
@@ -8,7 +8,7 @@ import remarkGfm from "remark-gfm";
 
 const API = process.env.NEXT_PUBLIC_API_URL;
 
-type ViewMode = "preview" | "raw" | "pdf" | "reasoning" | "jd";
+type ViewMode = "preview" | "raw" | "reasoning" | "jd" | "history";
 
 const ARRANGEMENT_LABELS: Record<string, string> = {
   remote: "Remote",
@@ -24,6 +24,14 @@ const SECTION_LABELS: Record<string, string> = {
   skills:         "Skills",
   education:      "Education",
   certifications: "Certifications",
+};
+
+const EVENT_TYPE_LABELS: Record<string, string> = {
+  status_change: "Status changed",
+  cv_edited:     "CV edited",
+  pdf_rendered:  "PDF rendered",
+  email_received:"Email received",
+  note_added:    "Note added",
 };
 
 // ── Sections panel ────────────────────────────────────────────────────────────
@@ -214,6 +222,111 @@ function Detail({ label, value }: { label: string; value: string }) {
   );
 }
 
+// ── Notes panel ───────────────────────────────────────────────────────────────
+
+function NotesPanel({ appId, initialNotes }: { appId: string; initialNotes: string }) {
+  const [notes, setNotes]     = useState(initialNotes ?? "");
+  const [saved, setSaved]     = useState(true);
+  const [saving, setSaving]   = useState(false);
+
+  async function save(value: string) {
+    setSaving(true);
+    try {
+      await fetch(`${API}/applications/${appId}`, {
+        method:  "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({ notes: value }),
+      });
+      setSaved(true);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="bg-bg-surface border border-bg-border rounded-xl px-5 py-4">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-xs font-semibold text-text-muted uppercase tracking-wide">Notes</h2>
+        {saving && <span className="text-[10px] text-text-muted">Saving…</span>}
+        {!saving && !saved && <span className="text-[10px] text-text-muted">Unsaved</span>}
+      </div>
+      <textarea
+        value={notes}
+        onChange={(e) => { setNotes(e.target.value); setSaved(false); }}
+        onBlur={(e) => { if (!saved) save(e.target.value); }}
+        placeholder="Add any notes about this application…"
+        rows={4}
+        className="w-full px-3 py-2 text-sm text-text-primary bg-bg-elevated border border-bg-border rounded-lg resize-y focus:outline-none focus:ring-2 focus:ring-accent/40 placeholder-text-muted leading-relaxed"
+      />
+    </div>
+  );
+}
+
+// ── History panel ─────────────────────────────────────────────────────────────
+
+function HistoryPanel({ appId }: { appId: string }) {
+  const [events, setEvents]   = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch(`${API}/applications/${appId}/events`)
+      .then((r) => r.json())
+      .then((data) => { setEvents(Array.isArray(data) ? data : []); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, [appId]);
+
+  function describeEvent(event: any): string {
+    if (event.event_type === "status_change") {
+      if (event.from_status) {
+        return `Status: ${event.from_status} → ${event.to_status}`;
+      }
+      return `Status set to ${event.to_status}`;
+    }
+    return EVENT_TYPE_LABELS[event.event_type] ?? event.event_type.replace(/_/g, " ");
+  }
+
+  function formatDate(iso: string): string {
+    try {
+      return new Date(iso).toLocaleString("en-GB", {
+        day: "2-digit", month: "short", year: "numeric",
+        hour: "2-digit", minute: "2-digit",
+      });
+    } catch {
+      return iso;
+    }
+  }
+
+  return (
+    <div className="bg-bg-elevated p-8 min-h-[40vh]">
+      {loading && (
+        <p className="text-sm text-text-muted">Loading history…</p>
+      )}
+      {!loading && events.length === 0 && (
+        <p className="text-sm text-text-muted">No history recorded yet.</p>
+      )}
+      {!loading && events.length > 0 && (
+        <ol className="relative border-l border-bg-border space-y-5 pl-6">
+          {events.map((event) => (
+            <li key={event.id} className="relative">
+              {/* Timeline dot */}
+              <span className="absolute -left-[25px] top-1 w-3 h-3 rounded-full border-2 border-accent/40 bg-bg-elevated" />
+              <p className="text-xs font-medium text-text-primary leading-snug">
+                {describeEvent(event)}
+              </p>
+              {event.detail && (
+                <p className="text-xs text-text-muted mt-0.5 leading-snug">{event.detail}</p>
+              )}
+              <p className="text-[10px] text-text-muted font-mono mt-1">
+                {formatDate(event.occurred_at)}
+              </p>
+            </li>
+          ))}
+        </ol>
+      )}
+    </div>
+  );
+}
+
 // ── Reasoning panel ───────────────────────────────────────────────────────────
 
 function ReasoningPanel({ content, hasReasoning }: { content: string; hasReasoning: boolean }) {
@@ -315,20 +428,20 @@ export default function ApplicationPage() {
     }
   }
 
-  async function handleSave() {
+  const handleSave = useCallback(async () => {
     setSaving(true);
     try {
       await fetch(`${API}/applications/${id}/cv`, {
-        method: "PUT",
+        method:  "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: edited }),
+        body:    JSON.stringify({ content: edited }),
       });
       setContent(edited);
       setDirty(false);
     } finally {
       setSaving(false);
     }
-  }
+  }, [id, edited]);
 
   async function handleRender() {
     setRendering(true);
@@ -341,7 +454,6 @@ export default function ApplicationPage() {
         throw new Error(data.detail || "Render failed");
       }
       setHasPdf(true);
-      setView("pdf");
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -351,9 +463,9 @@ export default function ApplicationPage() {
 
   async function handleRoleDetailsSave(updates: Record<string, any>) {
     const res = await fetch(`${API}/applications/${id}`, {
-      method: "PATCH",
+      method:  "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(updates),
+      body:    JSON.stringify(updates),
     });
     if (res.ok) setMeta(await res.json());
   }
@@ -363,17 +475,17 @@ export default function ApplicationPage() {
   const views: ViewMode[] = [
     "preview",
     "raw",
-    ...(hasPdf    ? (["pdf"] as ViewMode[]) : []),
-    ...(hasJd     ? (["jd"]  as ViewMode[]) : []),
+    ...(hasJd ? (["jd"] as ViewMode[]) : []),
     "reasoning",
+    "history",
   ];
 
   const VIEW_LABELS: Record<ViewMode, string> = {
     preview:   "Preview",
     raw:       "Raw",
-    pdf:       "PDF",
     jd:        "Job Description",
     reasoning: "🧠 Reasoning",
+    history:   "History",
   };
 
   return (
@@ -397,20 +509,30 @@ export default function ApplicationPage() {
 
         <div className="flex items-center gap-2 flex-shrink-0">
           {dirty && (
-            <button onClick={handleSave} disabled={saving}
-              className="px-3 py-1.5 text-xs font-medium border border-accent text-accent rounded-lg hover:bg-accent/10 transition-colors disabled:opacity-50">
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="px-3 py-1.5 text-xs font-medium border border-accent text-accent rounded-lg hover:bg-accent/10 transition-colors disabled:opacity-50"
+            >
               {saving ? "Saving…" : "Save changes"}
             </button>
           )}
-          <button onClick={handleRender} disabled={rendering}
-            className="px-3 py-1.5 text-xs font-medium bg-accent text-white rounded-lg hover:bg-accent-dim transition-colors disabled:opacity-50 flex items-center gap-1.5">
+          <button
+            onClick={handleRender}
+            disabled={rendering}
+            className="px-3 py-1.5 text-xs font-medium bg-accent text-white rounded-lg hover:bg-accent-dim transition-colors disabled:opacity-50 flex items-center gap-1.5"
+          >
             {rendering
               ? <><span className="w-3 h-3 border border-white/30 border-t-white rounded-full animate-spin" />Rendering…</>
               : "Render PDF"}
           </button>
           {hasPdf && (
-            <a href={`${API}/applications/${id}/pdf`} target="_blank" rel="noopener noreferrer"
-              className="px-3 py-1.5 text-xs font-medium bg-bg-elevated border border-bg-border text-text-secondary rounded-lg hover:text-text-primary transition-colors">
+            <a
+              href={`${API}/applications/${id}/pdf`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-3 py-1.5 text-xs font-medium bg-bg-elevated border border-bg-border text-text-secondary rounded-lg hover:text-text-primary transition-colors"
+            >
               Download PDF
             </a>
           )}
@@ -422,6 +544,10 @@ export default function ApplicationPage() {
       )}
 
       {meta && <RoleDetails meta={meta} onSave={handleRoleDetailsSave} />}
+
+      {meta && (
+        <NotesPanel appId={id} initialNotes={meta.notes ?? ""} />
+      )}
 
       {sections.length > 0 && <SectionsPanel appId={id} sections={sections} />}
 
@@ -445,19 +571,22 @@ export default function ApplicationPage() {
           </div>
         )}
         {view === "raw" && (
-          <textarea value={edited}
+          <textarea
+            value={edited}
             onChange={(e) => { setEdited(e.target.value); setDirty(e.target.value !== content); }}
+            onBlur={() => { if (dirty) handleSave(); }}
             className="w-full h-[70vh] p-6 font-mono text-xs text-text-primary bg-bg-elevated resize-none focus:outline-none leading-relaxed"
-            spellCheck={false} />
-        )}
-        {view === "pdf" && hasPdf && (
-          <iframe src={`${API}/applications/${id}/pdf`} className="w-full h-[85vh]" title="CV PDF" />
+            spellCheck={false}
+          />
         )}
         {view === "jd" && (
           <JdPanel jdText={meta?.jd_text ?? ""} />
         )}
         {view === "reasoning" && (
           <ReasoningPanel content={reasoning} hasReasoning={hasReasoning} />
+        )}
+        {view === "history" && (
+          <HistoryPanel appId={id} />
         )}
       </div>
     </div>

@@ -4,7 +4,7 @@ settings.py — Read and write ATAT configuration settings.
 Reads from the active environment (via pipeline.config) and writes
 changes back to the .env file in the repo root.
 
-Security: CORS is locked to localhost:3000, so these endpoints are
+Security: CORS is locked to localhost, so these endpoints are
 only reachable from the local UI. Never expose this API publicly.
 """
 
@@ -31,28 +31,34 @@ _DEMO_LOCKED_FIELDS = {"cv_library_path", "output_path"}
 # ── Models ────────────────────────────────────────────────────────────────────
 
 class Settings(BaseModel):
-    llm_provider:      str
-    llm_model:         str
-    anthropic_api_key: Optional[str] = None
-    openai_api_key:    Optional[str] = None
-    cv_library_path:   str
-    output_path:       str
-    thinking_budget:   int
-    render_pdf:        bool
-    temperature:       float
-    demo_mode:         bool = False
+    llm_provider:             str
+    llm_model:                str
+    anthropic_api_key:        Optional[str] = None
+    openai_api_key:           Optional[str] = None
+    cv_library_path:          str
+    output_path:              str
+    thinking_budget:          int
+    render_pdf:               bool
+    temperature:              float
+    demo_mode:                bool = False
+    auto_ghost_enabled:       bool
+    auto_ghost_days:          int
+    scheduler_interval_hours: int
 
 
 class SettingsUpdate(BaseModel):
-    llm_provider:      Optional[str]   = None
-    llm_model:         Optional[str]   = None
-    anthropic_api_key: Optional[str]   = None
-    openai_api_key:    Optional[str]   = None
-    cv_library_path:   Optional[str]   = None
-    output_path:       Optional[str]   = None
-    thinking_budget:   Optional[int]   = None
-    render_pdf:        Optional[bool]  = None
-    temperature:       Optional[float] = None
+    llm_provider:             Optional[str]   = None
+    llm_model:                Optional[str]   = None
+    anthropic_api_key:        Optional[str]   = None
+    openai_api_key:           Optional[str]   = None
+    cv_library_path:          Optional[str]   = None
+    output_path:              Optional[str]   = None
+    thinking_budget:          Optional[int]   = None
+    render_pdf:               Optional[bool]  = None
+    temperature:              Optional[float] = None
+    auto_ghost_enabled:       Optional[bool]  = None
+    auto_ghost_days:          Optional[int]   = None
+    scheduler_interval_hours: Optional[int]   = None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -101,18 +107,22 @@ def get_settings():
         LLM_PROVIDER, LLM_MODEL, CV_LIBRARY_PATH, OUTPUT_PATH,
         THINKING_BUDGET, RENDER_PDF, TEMPERATURE,
         ANTHROPIC_API_KEY, OPENAI_API_KEY, DEMO_MODE,
+        AUTO_GHOST_ENABLED, AUTO_GHOST_DAYS, SCHEDULER_INTERVAL_HOURS,
     )
     return Settings(
-        llm_provider      = LLM_PROVIDER,
-        llm_model         = LLM_MODEL,
-        anthropic_api_key = _mask(ANTHROPIC_API_KEY),
-        openai_api_key    = _mask(OPENAI_API_KEY),
-        cv_library_path   = str(CV_LIBRARY_PATH),
-        output_path       = str(OUTPUT_PATH),
-        thinking_budget   = THINKING_BUDGET,
-        render_pdf        = RENDER_PDF,
-        temperature       = TEMPERATURE,
-        demo_mode         = DEMO_MODE,
+        llm_provider             = LLM_PROVIDER,
+        llm_model                = LLM_MODEL,
+        anthropic_api_key        = _mask(ANTHROPIC_API_KEY),
+        openai_api_key           = _mask(OPENAI_API_KEY),
+        cv_library_path          = str(CV_LIBRARY_PATH),
+        output_path              = str(OUTPUT_PATH),
+        thinking_budget          = THINKING_BUDGET,
+        render_pdf               = RENDER_PDF,
+        temperature              = TEMPERATURE,
+        demo_mode                = DEMO_MODE,
+        auto_ghost_enabled       = AUTO_GHOST_ENABLED,
+        auto_ghost_days          = AUTO_GHOST_DAYS,
+        scheduler_interval_hours = SCHEDULER_INTERVAL_HOURS,
     )
 
 
@@ -134,22 +144,25 @@ def update_settings(body: SettingsUpdate):
             )
 
     key_map = {
-        "llm_provider":      "LLM_PROVIDER",
-        "llm_model":         "LLM_MODEL",
-        "anthropic_api_key": "ANTHROPIC_API_KEY",
-        "openai_api_key":    "OPENAI_API_KEY",
-        "cv_library_path":   "CV_LIBRARY_PATH",
-        "output_path":       "OUTPUT_PATH",
-        "thinking_budget":   "THINKING_BUDGET",
-        "render_pdf":        "RENDER_PDF",
-        "temperature":       "TEMPERATURE",
+        "llm_provider":             "LLM_PROVIDER",
+        "llm_model":                "LLM_MODEL",
+        "anthropic_api_key":        "ANTHROPIC_API_KEY",
+        "openai_api_key":           "OPENAI_API_KEY",
+        "cv_library_path":          "CV_LIBRARY_PATH",
+        "output_path":              "OUTPUT_PATH",
+        "thinking_budget":          "THINKING_BUDGET",
+        "render_pdf":               "RENDER_PDF",
+        "temperature":              "TEMPERATURE",
+        "auto_ghost_enabled":       "AUTO_GHOST_ENABLED",
+        "auto_ghost_days":          "AUTO_GHOST_DAYS",
+        "scheduler_interval_hours": "SCHEDULER_INTERVAL_HOURS",
     }
 
     # API key fields — skip if empty or masked
     key_fields = {"anthropic_api_key", "openai_api_key"}
 
-    written  = []
-    skipped  = []
+    written = []
+    skipped = []
 
     for field, value in updates.items():
         env_key = key_map.get(field)

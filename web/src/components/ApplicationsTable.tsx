@@ -4,18 +4,36 @@ import {
   useState, useRef, useEffect, useCallback, useMemo,
 } from "react";
 import { createPortal } from "react-dom";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 
 const API = process.env.NEXT_PUBLIC_API_URL;
 
+// Human-readable labels — handles underscored statuses like case_study
+const STATUS_LABELS: Record<string, string> = {
+  generated:    "Generated",
+  reviewing:    "Reviewing",
+  applied:      "Applied",
+  acknowledged: "Acknowledged",
+  interviewing: "Interviewing",
+  case_study:   "Case Study",
+  offered:      "Offered",
+  rejected:     "Rejected",
+  ghosted:      "Ghosted",
+  excluded:     "Excluded",
+  archived:     "Archived",
+};
+
 const STATUS_FLOW: Record<string, string[]> = {
   generated:    ["reviewing", "applied", "excluded", "archived"],
   reviewing:    ["applied", "excluded", "archived"],
-  applied:      ["acknowledged", "rejected", "archived"],
-  acknowledged: ["interviewing", "rejected", "archived"],
-  interviewing: ["offered", "rejected", "archived"],
+  applied:      ["acknowledged", "rejected", "ghosted", "archived"],
+  acknowledged: ["interviewing", "rejected", "ghosted", "archived"],
+  interviewing: ["case_study", "offered", "rejected", "ghosted", "archived"],
+  case_study:   ["interviewing", "offered", "rejected", "ghosted", "archived"],
   offered:      ["rejected", "archived"],
   rejected:     ["archived"],
+  ghosted:      ["applied", "acknowledged", "interviewing", "archived"],
   excluded:     ["archived"],
   archived:     ["generated"],
 };
@@ -26,8 +44,10 @@ const STATUS_STYLES: Record<string, string> = {
   applied:      "bg-blue-50 text-blue-700 border border-blue-200",
   acknowledged: "bg-purple-50 text-purple-700 border border-purple-200",
   interviewing: "bg-orange-50 text-orange-700 border border-orange-200",
+  case_study:   "bg-violet-50 text-violet-700 border border-violet-200",
   offered:      "bg-emerald-50 text-emerald-700 border border-emerald-200",
   rejected:     "bg-red-50 text-red-600 border border-red-200",
+  ghosted:      "bg-slate-100 text-slate-500 border border-slate-300",
   excluded:     "bg-gray-100 text-gray-500 border border-gray-200",
   archived:     "bg-gray-50 text-gray-400 border border-gray-200",
 };
@@ -57,9 +77,9 @@ interface EditState {
 interface PortalPos { top: number; left: number; width: number }
 
 function usePortalDropdown() {
-  const [open, setOpen]   = useState(false);
-  const [pos, setPos]     = useState<PortalPos>({ top: 0, left: 0, width: 0 });
-  const triggerRef        = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+  const [pos, setPos]   = useState<PortalPos>({ top: 0, left: 0, width: 0 });
+  const triggerRef      = useRef<HTMLButtonElement>(null);
 
   const toggle = useCallback(() => {
     if (!open && triggerRef.current) {
@@ -119,15 +139,15 @@ function StatusDropdown({
     <>
       <button
         ref={triggerRef}
-        onClick={() => options.length > 0 && toggle()}
+        onClick={(e) => { e.stopPropagation(); options.length > 0 && toggle(); }}
         disabled={loading || options.length === 0}
-        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium capitalize transition-opacity ${
+        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium transition-opacity ${
           STATUS_STYLES[app.status] ?? STATUS_STYLES.generated
         } ${options.length > 0 ? "cursor-pointer hover:opacity-80" : "cursor-default"}`}
       >
         {loading
           ? <span className="w-2 h-2 border border-current/40 border-t-current rounded-full animate-spin" />
-          : app.status}
+          : (STATUS_LABELS[app.status] ?? app.status)}
         {options.length > 0 && !loading && <span className="opacity-50 text-[10px]">▾</span>}
       </button>
 
@@ -144,9 +164,9 @@ function StatusDropdown({
             <button
               key={s}
               onClick={() => changeStatus(s)}
-              className="w-full text-left px-3 py-1.5 text-xs text-text-secondary hover:bg-bg-surface hover:text-text-primary capitalize transition-colors"
+              className="w-full text-left px-3 py-1.5 text-xs text-text-secondary hover:bg-bg-surface hover:text-text-primary transition-colors"
             >
-              {s}
+              {STATUS_LABELS[s] ?? s}
             </button>
           ))}
         </div>,
@@ -156,14 +176,17 @@ function StatusDropdown({
   );
 }
 
-// ── Delete / archive menu ──────────────────────────────────────────────────────
+// ── Actions menu (three dots) ──────────────────────────────────────────────────
+// Contains: Edit, Archive, Delete
 
-function DeleteMenu({
+function ActionsMenu({
   app,
+  onEdit,
   onArchive,
   onDelete,
 }: {
-  app: Application;
+  app:       Application;
+  onEdit:    (app: Application) => void;
   onArchive: (id: string) => void;
   onDelete:  (id: string) => void;
 }) {
@@ -203,9 +226,9 @@ function DeleteMenu({
     <>
       <button
         ref={triggerRef}
-        onClick={() => { toggle(); setConfirm(false); }}
-        className="text-text-muted hover:text-text-secondary text-xs transition-colors"
-        title="Delete or archive"
+        onClick={(e) => { e.stopPropagation(); toggle(); setConfirm(false); }}
+        className="text-text-muted hover:text-text-secondary text-xs transition-colors px-1"
+        title="Actions"
       >
         ···
       </button>
@@ -219,12 +242,19 @@ function DeleteMenu({
           {!confirm ? (
             <>
               <button
+                onClick={(e) => { e.stopPropagation(); setOpen(false); onEdit(app); }}
+                className="w-full text-left px-3 py-1.5 text-xs text-text-secondary hover:bg-bg-surface transition-colors"
+              >
+                Edit
+              </button>
+              <button
                 onClick={archive}
                 disabled={loading || app.status === "archived"}
                 className="w-full text-left px-3 py-1.5 text-xs text-text-secondary hover:bg-bg-surface transition-colors disabled:opacity-40"
               >
                 Archive
               </button>
+              <div className="border-t border-bg-border my-1" />
               <button
                 onClick={() => setConfirm(true)}
                 className="w-full text-left px-3 py-1.5 text-xs text-red-500 hover:bg-red-50 transition-colors"
@@ -271,12 +301,13 @@ export default function ApplicationsTable({
 }: {
   applications: Application[];
 }) {
-  const [apps, setApps]       = useState<Application[]>(initial);
-  const [editing, setEditing] = useState<EditState | null>(null);
-  const [saving, setSaving]   = useState(false);
-  const [search, setSearch]   = useState("");
-  const [sortKey, setSortKey] = useState<SortKey>("applied_date");
-  const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const router                      = useRouter();
+  const [apps, setApps]             = useState<Application[]>(initial);
+  const [editing, setEditing]       = useState<EditState | null>(null);
+  const [saving, setSaving]         = useState(false);
+  const [search, setSearch]         = useState("");
+  const [sortKey, setSortKey]       = useState<SortKey>("applied_date");
+  const [sortDir, setSortDir]       = useState<SortDir>("desc");
 
   function toggleSort(col: SortKey) {
     if (sortKey === col) {
@@ -294,30 +325,19 @@ export default function ApplicationsTable({
       ? apps.filter((a) =>
           a.company.toLowerCase().includes(q) ||
           a.role.toLowerCase().includes(q) ||
-          a.status.toLowerCase().includes(q)
+          a.status.toLowerCase().includes(q) ||
+          (STATUS_LABELS[a.status] ?? "").toLowerCase().includes(q)
         )
       : apps;
 
     return [...filtered].sort((a, b) => {
-      let av: string = "";
-      let bv: string = "";
+      let av = "";
+      let bv = "";
       switch (sortKey) {
-        case "applied_date":
-          av = a.applied_date ?? "";
-          bv = b.applied_date ?? "";
-          break;
-        case "company":
-          av = a.company.toLowerCase();
-          bv = b.company.toLowerCase();
-          break;
-        case "role":
-          av = a.role.toLowerCase();
-          bv = b.role.toLowerCase();
-          break;
-        case "status":
-          av = a.status;
-          bv = b.status;
-          break;
+        case "applied_date": av = a.applied_date ?? ""; bv = b.applied_date ?? ""; break;
+        case "company":      av = a.company.toLowerCase(); bv = b.company.toLowerCase(); break;
+        case "role":         av = a.role.toLowerCase();    bv = b.role.toLowerCase();    break;
+        case "status":       av = a.status;                bv = b.status;                break;
       }
       const cmp = av < bv ? -1 : av > bv ? 1 : 0;
       return sortDir === "asc" ? cmp : -cmp;
@@ -344,14 +364,12 @@ export default function ApplicationsTable({
     if (!editing) return;
     setSaving(true);
     try {
-      // Save company + role
       const patchRes = await fetch(`${API}/applications/${editing.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ company: editing.company, role: editing.role }),
       });
 
-      // Save applied date (upsert)
       await fetch(`${API}/applications/${editing.id}/dates/applied`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -373,7 +391,11 @@ export default function ApplicationsTable({
     }
   }
 
-  const thClass = "text-left px-4 py-3 text-xs font-semibold text-text-muted uppercase tracking-wide select-none";
+  function navigateToApp(id: string) {
+    router.push(`/applications/${id}`);
+  }
+
+  const thClass    = "text-left px-4 py-3 text-xs font-semibold text-text-muted uppercase tracking-wide select-none";
   const thSortable = `${thClass} cursor-pointer hover:text-text-secondary transition-colors`;
 
   return (
@@ -433,9 +455,10 @@ export default function ApplicationsTable({
               return (
                 <tr
                   key={app.id}
-                  className={`bg-bg-elevated hover:bg-bg-surface transition-colors ${
-                    app.status === "archived" ? "opacity-50" : ""
-                  }`}
+                  onClick={() => !isEditing && navigateToApp(app.id)}
+                  className={`bg-bg-elevated transition-colors ${
+                    isEditing ? "" : "hover:bg-bg-surface cursor-pointer"
+                  } ${app.status === "archived" ? "opacity-50" : ""}`}
                 >
                   {/* Date applied — editable */}
                   <td className={`px-4 py-3 text-xs whitespace-nowrap ${isLast ? "rounded-bl-xl" : ""}`}>
@@ -443,6 +466,7 @@ export default function ApplicationsTable({
                       <input
                         type="date"
                         value={editing.applied_date}
+                        onClick={(e) => e.stopPropagation()}
                         onChange={(e) => setEditing((p) => p ? { ...p, applied_date: e.target.value } : p)}
                         className="px-2 py-1 text-xs border border-accent/50 rounded-md bg-white focus:outline-none focus:ring-1 focus:ring-accent"
                       />
@@ -459,6 +483,7 @@ export default function ApplicationsTable({
                       <input
                         autoFocus
                         value={editing.company}
+                        onClick={(e) => e.stopPropagation()}
                         onChange={(e) => setEditing((p) => p ? { ...p, company: e.target.value } : p)}
                         className="w-full px-2 py-1 text-sm border border-accent/50 rounded-md bg-white focus:outline-none focus:ring-1 focus:ring-accent"
                       />
@@ -472,6 +497,7 @@ export default function ApplicationsTable({
                     {isEditing ? (
                       <input
                         value={editing.role}
+                        onClick={(e) => e.stopPropagation()}
                         onChange={(e) => setEditing((p) => p ? { ...p, role: e.target.value } : p)}
                         onKeyDown={(e) => {
                           if (e.key === "Enter") saveEdit();
@@ -498,34 +524,30 @@ export default function ApplicationsTable({
 
                   {/* Actions */}
                   <td className={`px-4 py-3 ${isLast ? "rounded-br-xl" : ""}`}>
-                    <div className="flex items-center justify-end gap-3">
+                    <div className="flex items-center justify-end">
                       {isEditing ? (
-                        <>
-                          <button onClick={saveEdit} disabled={saving}
-                            className="text-xs text-accent hover:underline disabled:opacity-50">
+                        <div className="flex gap-3">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); saveEdit(); }}
+                            disabled={saving}
+                            className="text-xs text-accent hover:underline disabled:opacity-50"
+                          >
                             {saving ? "Saving…" : "Save"}
                           </button>
-                          <button onClick={cancelEdit}
-                            className="text-xs text-text-muted hover:text-text-secondary">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); cancelEdit(); }}
+                            className="text-xs text-text-muted hover:text-text-secondary"
+                          >
                             Cancel
                           </button>
-                        </>
+                        </div>
                       ) : (
-                        <>
-                          <button onClick={() => startEdit(app)}
-                            className="text-xs text-text-muted hover:text-text-secondary transition-colors">
-                            Edit
-                          </button>
-                          <Link href={`/applications/${app.id}`}
-                            className="text-xs text-accent hover:underline">
-                            View →
-                          </Link>
-                          <DeleteMenu
-                            app={app}
-                            onArchive={(id) => updateStatus(id, "archived")}
-                            onDelete={removeApp}
-                          />
-                        </>
+                        <ActionsMenu
+                          app={app}
+                          onEdit={startEdit}
+                          onArchive={(id) => updateStatus(id, "archived")}
+                          onDelete={removeApp}
+                        />
                       )}
                     </div>
                   </td>
