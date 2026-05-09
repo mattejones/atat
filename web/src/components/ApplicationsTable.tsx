@@ -5,52 +5,10 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
+
+import { STATUS_LABELS, STATUS_FLOW, STATUS_STYLES } from "@/lib/statuses";
 
 const API = process.env.NEXT_PUBLIC_API_URL;
-
-// Human-readable labels — handles underscored statuses like case_study
-const STATUS_LABELS: Record<string, string> = {
-  generated:    "Generated",
-  reviewing:    "Reviewing",
-  applied:      "Applied",
-  acknowledged: "Acknowledged",
-  interviewing: "Interviewing",
-  case_study:   "Case Study",
-  offered:      "Offered",
-  rejected:     "Rejected",
-  ghosted:      "Ghosted",
-  excluded:     "Excluded",
-  archived:     "Archived",
-};
-
-const STATUS_FLOW: Record<string, string[]> = {
-  generated:    ["reviewing", "applied", "excluded", "archived"],
-  reviewing:    ["applied", "excluded", "archived"],
-  applied:      ["acknowledged", "rejected", "ghosted", "archived"],
-  acknowledged: ["interviewing", "rejected", "ghosted", "archived"],
-  interviewing: ["case_study", "offered", "rejected", "ghosted", "archived"],
-  case_study:   ["interviewing", "offered", "rejected", "ghosted", "archived"],
-  offered:      ["rejected", "archived"],
-  rejected:     ["archived"],
-  ghosted:      ["applied", "acknowledged", "interviewing", "archived"],
-  excluded:     ["archived"],
-  archived:     ["generated"],
-};
-
-const STATUS_STYLES: Record<string, string> = {
-  generated:    "bg-accent/10 text-accent border border-accent/20",
-  reviewing:    "bg-yellow-50 text-yellow-700 border border-yellow-200",
-  applied:      "bg-blue-50 text-blue-700 border border-blue-200",
-  acknowledged: "bg-purple-50 text-purple-700 border border-purple-200",
-  interviewing: "bg-orange-50 text-orange-700 border border-orange-200",
-  case_study:   "bg-violet-50 text-violet-700 border border-violet-200",
-  offered:      "bg-emerald-50 text-emerald-700 border border-emerald-200",
-  rejected:     "bg-red-50 text-red-600 border border-red-200",
-  ghosted:      "bg-slate-100 text-slate-500 border border-slate-300",
-  excluded:     "bg-gray-100 text-gray-500 border border-gray-200",
-  archived:     "bg-gray-50 text-gray-400 border border-gray-200",
-};
 
 type SortKey = "applied_date" | "company" | "role" | "status";
 type SortDir = "asc" | "desc";
@@ -152,7 +110,12 @@ function StatusDropdown({
       </button>
 
       {open && options.length > 0 && createPortal(
+        // onClick here catches all clicks inside the portal and stops them
+        // bubbling through the React tree to the table row's onClick handler.
+        // React portals escape the DOM tree but NOT the React component tree,
+        // so without this, selecting a status would also trigger navigation.
         <div
+          onClick={(e) => e.stopPropagation()}
           onMouseDown={(e) => e.stopPropagation()}
           style={{ position: "absolute", top: pos.top, left: pos.left, minWidth: pos.width, zIndex: 9999 }}
           className="bg-white border border-bg-border rounded-lg shadow-xl py-1"
@@ -177,7 +140,6 @@ function StatusDropdown({
 }
 
 // ── Actions menu (three dots) ──────────────────────────────────────────────────
-// Contains: Edit, Archive, Delete
 
 function ActionsMenu({
   app,
@@ -235,6 +197,7 @@ function ActionsMenu({
 
       {open && createPortal(
         <div
+          onClick={(e) => e.stopPropagation()}
           onMouseDown={(e) => e.stopPropagation()}
           style={{ position: "absolute", top: pos.top, left: menuLeft, minWidth: 160, zIndex: 9999 }}
           className="bg-white border border-bg-border rounded-lg shadow-xl py-1"
@@ -318,7 +281,6 @@ export default function ApplicationsTable({
     }
   }
 
-  // Filter then sort
   const visible = useMemo(() => {
     const q = search.toLowerCase().trim();
     const filtered = q
@@ -400,7 +362,6 @@ export default function ApplicationsTable({
 
   return (
     <div className="space-y-3">
-      {/* Search bar */}
       <div className="relative">
         <span className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted text-sm">⌕</span>
         <input
@@ -420,7 +381,6 @@ export default function ApplicationsTable({
         )}
       </div>
 
-      {/* Table */}
       <div className="rounded-xl border border-bg-border overflow-visible">
         <table className="w-full text-sm border-collapse">
           <thead>
@@ -460,7 +420,6 @@ export default function ApplicationsTable({
                     isEditing ? "" : "hover:bg-bg-surface cursor-pointer"
                   } ${app.status === "archived" ? "opacity-50" : ""}`}
                 >
-                  {/* Date applied — editable */}
                   <td className={`px-4 py-3 text-xs whitespace-nowrap ${isLast ? "rounded-bl-xl" : ""}`}>
                     {isEditing ? (
                       <input
@@ -477,7 +436,6 @@ export default function ApplicationsTable({
                     )}
                   </td>
 
-                  {/* Company */}
                   <td className="px-4 py-2">
                     {isEditing ? (
                       <input
@@ -492,7 +450,6 @@ export default function ApplicationsTable({
                     )}
                   </td>
 
-                  {/* Role */}
                   <td className="px-4 py-2">
                     {isEditing ? (
                       <input
@@ -510,19 +467,16 @@ export default function ApplicationsTable({
                     )}
                   </td>
 
-                  {/* Status */}
                   <td className="px-4 py-3">
                     <StatusDropdown app={app} onUpdate={updateStatus} />
                   </td>
 
-                  {/* PDF */}
                   <td className="px-4 py-3">
                     {app.has_pdf
                       ? <span className="text-accent text-xs">✓</span>
                       : <span className="text-text-muted text-xs">—</span>}
                   </td>
 
-                  {/* Actions */}
                   <td className={`px-4 py-3 ${isLast ? "rounded-br-xl" : ""}`}>
                     <div className="flex items-center justify-end">
                       {isEditing ? (
