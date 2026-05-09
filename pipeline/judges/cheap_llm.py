@@ -13,12 +13,8 @@ about character indices directly, which is unreliable.
 Deliberately uses JUDGE_MODEL (Haiku / gpt-4o-mini) — this is a structured,
 mechanical task that does not require a frontier model.
 
-Source material passed to the judge:
-  - META file (name, contact, factual baseline)
-  - All EXPERIENCE files (roles, dates, companies, achievements)
-  - SKILLS file
-
-Personas are excluded — they are voice/framing guidance, not factual claims.
+System prompt is loaded from prompts/judge_accuracy.md at call time,
+so it can be edited without touching source code.
 """
 
 import json
@@ -29,41 +25,11 @@ from dataclasses import dataclass, field
 from pipeline.config import (
     LLM_PROVIDER, JUDGE_MODEL,
     ANTHROPIC_API_KEY, OPENAI_API_KEY,
-    META_PATH, EXPERIENCE_PATH, SKILLS_PATH,
+    META_PATH, EXPERIENCE_PATH, SKILLS_PATH, PROMPTS_PATH,
 )
 from pipeline.tailorer import load_text, load_experience_files
 
 log = logging.getLogger(__name__)
-
-
-# ── System prompt ─────────────────────────────────────────────────────────────
-
-_SYSTEM_PROMPT = """You are a CV accuracy judge. Your sole task is to identify claims
-in a generated CV section that are not supported by or directly contradict the
-provided source profile material.
-
-You must respond with a JSON object and nothing else — no preamble, no markdown fences.
-
-Response format:
-{
-  "flags": [
-    {
-      "excerpt": "<verbatim text from the generated section — copy exactly>",
-      "reason": "<concise explanation of why this claim is unsupported or inaccurate>"
-    }
-  ]
-}
-
-Rules:
-- Only flag claims that are factually grounded — roles, companies, dates, technologies,
-  achievements, seniority levels, and specific responsibilities.
-- Do NOT flag writing style, tone, word choice, or phrasing.
-- Do NOT flag reasonable inferences or summaries that are consistent with the source.
-- If the section is fully accurate, return: {"flags": []}
-- excerpt must be copied verbatim from the generated section — character-for-character.
-- Keep excerpts as short as possible while uniquely identifying the problematic claim.
-- Limit to a maximum of 5 flags. Flag only the most significant issues.
-"""
 
 
 # ── Flag and result dataclasses ───────────────────────────────────────────────
@@ -79,17 +45,16 @@ class CheapLLMFlag:
 
 @dataclass
 class CheapLLMResult:
-    passed:           bool
-    model:            str
-    prompt_tokens:    int
+    passed:            bool
+    model:             str
+    prompt_tokens:     int
     completion_tokens: int
-    flags:            list[CheapLLMFlag] = field(default_factory=list)
+    flags:             list[CheapLLMFlag] = field(default_factory=list)
 
 
 # ── Source material loader ────────────────────────────────────────────────────
 
 def _load_source_material() -> str:
-    """Assemble the factual source material passed to the judge."""
     meta       = load_text(META_PATH)
     experience = load_experience_files()
     skills     = load_text(SKILLS_PATH)
@@ -111,13 +76,8 @@ def _load_source_material() -> str:
 # ── Position resolver ─────────────────────────────────────────────────────────
 
 def _resolve_positions(text: str, excerpt: str) -> tuple[int, int]:
-    """
-    Find the character start/end position of an excerpt within text.
-    Falls back to (0, len(text)) if not found — flags the full section.
-    """
     idx = text.find(excerpt)
     if idx == -1:
-        # Try case-insensitive as a fallback
         lower_idx = text.lower().find(excerpt.lower())
         if lower_idx == -1:
             log.warning(f"Could not locate excerpt in text: '{excerpt[:60]}...'")
@@ -128,14 +88,13 @@ def _resolve_positions(text: str, excerpt: str) -> tuple[int, int]:
 
 # ── LLM callers ───────────────────────────────────────────────────────────────
 
-def _call_anthropic(user_message: str) -> tuple[str, int, int]:
-    """Returns (raw_response, prompt_tokens, completion_tokens)."""
+def _call_anthropic(system: str, user_message: str) -> tuple[str, int, int]:
     import anthropic
     client  = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     message = client.messages.create(
         model=JUDGE_MODEL,
         max_tokens=1024,
-        system=_SYSTEM_PROMPT,
+        system=system,
         messages=[{"role": "user", "content": user_message}],
     )
     text = "".join(
@@ -144,8 +103,7 @@ def _call_anthropic(user_message: str) -> tuple[str, int, int]:
     return text, message.usage.input_tokens, message.usage.output_tokens
 
 
-def _call_openai(user_message: str) -> tuple[str, int, int]:
-    """Returns (raw_response, prompt_tokens, completion_tokens)."""
+def _call_openai(system: str, user_message: str) -> tuple[str, int, int]:
     from openai import OpenAI
     client   = OpenAI(api_key=OPENAI_API_KEY)
     response = client.chat.completions.create(
@@ -153,7 +111,7 @@ def _call_openai(user_message: str) -> tuple[str, int, int]:
         max_tokens=1024,
         response_format={"type": "json_object"},
         messages=[
-            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "system", "content": system},
             {"role": "user",   "content": user_message},
         ],
     )
@@ -165,7 +123,6 @@ def _call_openai(user_message: str) -> tuple[str, int, int]:
 # ── Response parser ───────────────────────────────────────────────────────────
 
 def _parse_response(raw: str) -> list[dict]:
-    """Parse the judge's JSON response. Returns list of flag dicts."""
     cleaned = re.sub(r'^```(?:json)?\s*', '', raw.strip(), flags=re.IGNORECASE)
     cleaned = re.sub(r'\s*```$', '', cleaned).strip()
 
@@ -185,16 +142,7 @@ def _parse_response(raw: str) -> list[dict]:
 def run(section_text: str) -> CheapLLMResult:
     """
     Run the Tier 2 accuracy judge against a raw section text.
-
-    Loads source material from the cv-library at call time.
-    Character positions are resolved by locating verbatim excerpts
-    returned by the model within the section text.
-
-    Args:
-        section_text: Raw section content as stored in the section file.
-
-    Returns:
-        CheapLLMResult with resolved flags and token usage metadata.
+    System prompt is loaded from prompts/judge_accuracy.md at call time.
     """
     if not section_text or not section_text.strip():
         log.warning("Cheap LLM judge received empty text — skipping.")
@@ -203,6 +151,7 @@ def run(section_text: str) -> CheapLLMResult:
             prompt_tokens=0, completion_tokens=0,
         )
 
+    system          = load_text(PROMPTS_PATH / "judge_accuracy.md")
     source_material = _load_source_material()
 
     user_message = f"""## SOURCE PROFILE MATERIAL
@@ -215,9 +164,9 @@ def run(section_text: str) -> CheapLLMResult:
 
     try:
         if LLM_PROVIDER == "anthropic":
-            raw, prompt_tokens, completion_tokens = _call_anthropic(user_message)
+            raw, prompt_tokens, completion_tokens = _call_anthropic(system, user_message)
         elif LLM_PROVIDER == "openai":
-            raw, prompt_tokens, completion_tokens = _call_openai(user_message)
+            raw, prompt_tokens, completion_tokens = _call_openai(system, user_message)
         else:
             raise ValueError(f"Unknown LLM_PROVIDER: {LLM_PROVIDER!r}")
     except Exception as e:

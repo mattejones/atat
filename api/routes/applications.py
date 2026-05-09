@@ -45,7 +45,7 @@ class DateCreate(BaseModel):
 
 
 class AppliedDateUpsert(BaseModel):
-    date: Optional[str] = None  # None or empty = delete
+    date: Optional[str] = None
 
 
 class ManualApplicationCreate(BaseModel):
@@ -77,34 +77,65 @@ def _enrich(app: dict) -> dict:
 
 
 def _with_applied_date(rows: list, db: sqlite3.Connection) -> list[dict]:
-    """
-    Enrich a list of application rows with their applied_date from application_dates.
-    Uses a single query rather than N+1.
-    """
     apps = [_enrich(row_to_dict(r)) for r in rows]
     if not apps:
         return apps
-
-    ids       = [a["id"] for a in apps]
+    ids          = [a["id"] for a in apps]
     placeholders = ",".join("?" * len(ids))
-    date_rows = db.execute(
+    date_rows    = db.execute(
         f"""SELECT application_id, date FROM application_dates
             WHERE application_id IN ({placeholders}) AND date_type = 'applied'
             ORDER BY date DESC""",
         ids,
     ).fetchall()
-
-    # Keep only the most recent applied date per application
     date_map: dict[str, str] = {}
     for row in date_rows:
         app_id = row["application_id"]
         if app_id not in date_map:
             date_map[app_id] = row["date"]
-
     for app in apps:
         app["applied_date"] = date_map.get(app["id"])
-
     return apps
+
+
+# ── Static sub-routes (must precede /{app_id}) ────────────────────────────────
+
+@router.get("/recent-notes")
+def get_recent_notes(
+    limit: int = 10,
+    db: sqlite3.Connection = Depends(get_db),
+):
+    """
+    Return recent distinct generation notes from past applications.
+    Used on the generate page as a memory aid for reusable instructions.
+    Only returns applications that have non-empty generation_notes.
+    """
+    rows = db.execute(
+        """
+        SELECT generation_notes, company, role, created_at
+        FROM applications
+        WHERE generation_notes IS NOT NULL
+          AND trim(generation_notes) != ''
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+
+    # Deduplicate by note text, keeping the most recent occurrence
+    seen:   set[str]   = set()
+    result: list[dict] = []
+    for row in rows:
+        text = row["generation_notes"].strip()
+        if text not in seen:
+            seen.add(text)
+            result.append({
+                "text":    text,
+                "company": row["company"],
+                "role":    row["role"],
+            })
+
+    return result
 
 
 # ── List & get ────────────────────────────────────────────────────────────────
@@ -169,7 +200,7 @@ def create_manual_application(
             (app_id, body.applied_date)
         )
 
-    row = db.execute("SELECT * FROM applications WHERE id = ?", (app_id,)).fetchone()
+    row  = db.execute("SELECT * FROM applications WHERE id = ?", (app_id,)).fetchone()
     apps = _with_applied_date([row], db)
     return apps[0]
 
@@ -358,25 +389,17 @@ def upsert_applied_date(
     body: AppliedDateUpsert,
     db: sqlite3.Connection = Depends(get_db),
 ):
-    """
-    Upsert the applied date for an application.
-    Passing date=None or omitting it clears the applied date.
-    """
     if not db.execute("SELECT 1 FROM applications WHERE id = ?", (app_id,)).fetchone():
         raise HTTPException(status_code=404, detail="Application not found")
-
-    # Delete any existing applied date first
     db.execute(
         "DELETE FROM application_dates WHERE application_id = ? AND date_type = 'applied'",
         (app_id,)
     )
-
     if body.date:
         db.execute(
             "INSERT INTO application_dates (application_id, date_type, date) VALUES (?, 'applied', ?)",
             (app_id, body.date)
         )
-
     return {"status": "saved", "date": body.date}
 
 
@@ -402,7 +425,7 @@ def import_from_filesystem(db: sqlite3.Connection = Depends(get_db)):
             except Exception:
                 pass
         cv_content = ""
-        cv_path = folder / "cv.md"
+        cv_path    = folder / "cv.md"
         if cv_path.exists():
             cv_content = cv_path.read_text(encoding="utf-8")
         parts   = app_id.split("_", 2)

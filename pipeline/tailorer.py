@@ -11,6 +11,9 @@ Pipeline:
 
 call_llm() returns a validated dict.
 Callers extract reasoning and pass remaining data to cv_to_markdown() / cv_data_to_parsed().
+
+System prompt loaded from prompts/cv_generation.md at call time.
+Personal additions loaded from prompts/personal_additions.md (gitignored, optional).
 """
 
 import json
@@ -31,7 +34,6 @@ from pipeline.parse_cv import ParsedCV, ExperienceEntry, EducationEntry
 
 log = logging.getLogger(__name__)
 
-# Required top-level fields in the JSON response
 _REQUIRED_FIELDS = {
     "reasoning", "name", "contact", "profile",
     "experience", "skills", "education", "certifications",
@@ -41,19 +43,7 @@ _REQUIRED_FIELDS = {
 # ── Text sanitisation ─────────────────────────────────────────────────────────
 
 def sanitise_text(text: str) -> str:
-    """
-    Normalise unicode to ASCII-safe characters.
-
-    NFKD decomposition converts accented chars to base + combining mark
-    (e -> e, -- -> -, smart quotes -> straight quotes).
-    encode/ignore then drops anything still outside ASCII range.
-
-    Common conversions:
-      e, e, e -> e       u, u -> u      n -> n
-      - (en dash) -> -   -- (em dash) -> -
-      " " (smart quotes) -> " "
-      ... -> ...          * -> (dropped)
-    """
+    """Normalise unicode to ASCII-safe characters."""
     if not text:
         return text
     normalised = unicodedata.normalize("NFKD", text)
@@ -95,7 +85,7 @@ def load_personal_additions() -> str:
 
 
 def build_system_prompt() -> str:
-    base      = load_text(PROMPTS_PATH / "cv_prompt.md")
+    base      = load_text(PROMPTS_PATH / "cv_generation.md")
     additions = load_personal_additions()
     if additions:
         return f"{base}\n\n---\n\n## PERSONAL ADDITIONS\n\n{additions}"
@@ -103,7 +93,6 @@ def build_system_prompt() -> str:
 
 
 def assemble_user_message(jd_text: str, generation_notes: Optional[str] = None) -> str:
-    # Sanitise user-supplied text (library files are sanitised in load_text)
     jd_text = sanitise_text(jd_text)
     if generation_notes:
         generation_notes = sanitise_text(generation_notes)
@@ -148,11 +137,6 @@ def assemble_user_message(jd_text: str, generation_notes: Optional[str] = None) 
 # ── JSON parsing and validation ───────────────────────────────────────────────
 
 def parse_llm_response(raw: str) -> dict:
-    """
-    Parse and validate the model's JSON text response.
-    Strips markdown code fences if present.
-    Raises ValueError immediately on parse failure or missing required fields.
-    """
     cleaned = re.sub(r'^```(?:json)?\s*', '', raw.strip(), flags=re.IGNORECASE)
     cleaned = re.sub(r'\s*```$', '', cleaned)
     cleaned = cleaned.strip()
@@ -178,18 +162,12 @@ def parse_llm_response(raw: str) -> dict:
 # ── LLM clients ───────────────────────────────────────────────────────────────
 
 def call_llm(system: str, user: str) -> dict:
-    """
-    Call the configured LLM. Model outputs a JSON object as text.
-    Returns the parsed and validated dict.
-    Raises ValueError on parse/validation failure.
-    """
     if LLM_PROVIDER == "anthropic":
         raw = _call_anthropic(system, user)
     elif LLM_PROVIDER == "openai":
         raw = _call_openai(system, user)
     else:
         raise ValueError(f"Unknown LLM_PROVIDER: {LLM_PROVIDER!r}")
-
     return parse_llm_response(raw)
 
 
@@ -227,8 +205,7 @@ def _call_anthropic(system: str, user: str) -> str:
     )
 
     text = "".join(
-        block.text for block in message.content
-        if block.type == "text"
+        block.text for block in message.content if block.type == "text"
     )
 
     if not text.strip():
@@ -258,9 +235,7 @@ def _call_openai(system: str, user: str) -> str:
 # ── Structured -> Markdown ────────────────────────────────────────────────────
 
 def cv_to_markdown(cv_data: dict) -> str:
-    """Convert structured CV dict to canonical Markdown."""
     lines = []
-
     lines.append(f"# {cv_data.get('name', '')}")
     contact = cv_data.get('contact', {})
     contact_parts = [
@@ -313,10 +288,9 @@ def cv_to_markdown(cv_data: dict) -> str:
     return '\n'.join(lines)
 
 
-# ── Structured -> ParsedCV (for render.py) ────────────────────────────────────
+# ── Structured -> ParsedCV ────────────────────────────────────────────────────
 
 def cv_data_to_parsed(cv_data: dict) -> ParsedCV:
-    """Convert CV dict to ParsedCV for Typst rendering."""
     contact = cv_data.get('contact', {})
     contact_str = ' · '.join(filter(None, [
         contact.get('email', ''),
@@ -375,12 +349,7 @@ def derive_output_name(jd_path: Path) -> tuple[str, str]:
     return stem, "unknown-role"
 
 
-def write_output(
-    jd_path:     Path,
-    jd_text:     str,
-    cv_markdown: str,
-    reasoning:   str = "",
-) -> Path:
+def write_output(jd_path: Path, jd_text: str, cv_markdown: str, reasoning: str = "") -> Path:
     company, role = derive_output_name(jd_path)
     today         = date.today().isoformat()
     out_dir       = OUTPUT_PATH / f"{today}_{company}_{role}"
@@ -413,10 +382,7 @@ def write_output(
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
-def process_jd(
-    jd_path:          Path,
-    generation_notes: Optional[str] = None,
-) -> tuple[Path, str, str]:
+def process_jd(jd_path: Path, generation_notes: Optional[str] = None) -> tuple[Path, str, str]:
     """Full pipeline. Returns (output_dir, cv_markdown, reasoning)."""
     log.info(f"Processing: {jd_path.name}")
     jd_text = jd_path.read_text(encoding="utf-8")
