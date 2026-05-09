@@ -3,11 +3,12 @@ applications.py — Routes for managing job applications.
 """
 
 import json
+import logging
 import re
 import shutil
 import sqlite3
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -17,6 +18,8 @@ from pydantic import BaseModel
 
 from db.database import get_db, rows_to_list, row_to_dict
 from pipeline.config import OUTPUT_PATH
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/applications", tags=["applications"])
 
@@ -45,7 +48,7 @@ class DateCreate(BaseModel):
 
 
 class AppliedDateUpsert(BaseModel):
-    date: Optional[str] = None
+    date: Optional[str] = None  # None or empty = delete
 
 
 class ManualApplicationCreate(BaseModel):
@@ -61,10 +64,14 @@ class ManualApplicationCreate(BaseModel):
 
 VALID_STATUSES = {
     "generated", "reviewing", "applied", "acknowledged",
-    "interviewing", "offered", "rejected", "excluded", "archived",
+    "interviewing", "case_study", "offered",
+    "rejected", "ghosted", "excluded", "archived",
 }
 VALID_TIERS        = {"T1", "T2", "T3", "EX1"}
 VALID_ARRANGEMENTS = {"remote", "hybrid", "office"}
+
+# Statuses eligible for auto-ghosting — active but waiting on employer response
+_GHOSTABLE_STATUSES = ("applied", "acknowledged", "interviewing", "case_study")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -77,9 +84,14 @@ def _enrich(app: dict) -> dict:
 
 
 def _with_applied_date(rows: list, db: sqlite3.Connection) -> list[dict]:
+    """
+    Enrich a list of application rows with their applied_date from application_dates.
+    Uses a single query rather than N+1.
+    """
     apps = [_enrich(row_to_dict(r)) for r in rows]
     if not apps:
         return apps
+
     ids          = [a["id"] for a in apps]
     placeholders = ",".join("?" * len(ids))
     date_rows    = db.execute(
@@ -88,54 +100,101 @@ def _with_applied_date(rows: list, db: sqlite3.Connection) -> list[dict]:
             ORDER BY date DESC""",
         ids,
     ).fetchall()
+
+    # Keep only the most recent applied date per application
     date_map: dict[str, str] = {}
     for row in date_rows:
         app_id = row["application_id"]
         if app_id not in date_map:
             date_map[app_id] = row["date"]
+
     for app in apps:
         app["applied_date"] = date_map.get(app["id"])
+
     return apps
 
 
-# ── Static sub-routes (must precede /{app_id}) ────────────────────────────────
+def _upsert_applied_date_if_missing(app_id: str, db: sqlite3.Connection) -> None:
+    """
+    Insert today as the applied date only if no applied date already exists.
+    Called automatically when status transitions to 'applied'.
+    """
+    existing = db.execute(
+        "SELECT 1 FROM application_dates WHERE application_id = ? AND date_type = 'applied'",
+        (app_id,),
+    ).fetchone()
+    if not existing:
+        db.execute(
+            "INSERT INTO application_dates (application_id, date_type, date) VALUES (?, 'applied', ?)",
+            (app_id, date.today().isoformat()),
+        )
 
-@router.get("/recent-notes")
-def get_recent_notes(
-    limit: int = 10,
-    db: sqlite3.Connection = Depends(get_db),
-):
+
+# ── Auto-ghost logic ──────────────────────────────────────────────────────────
+
+def _do_auto_ghost(db: sqlite3.Connection, days: int) -> list[str]:
     """
-    Return recent distinct generation notes from past applications.
-    Used on the generate page as a memory aid for reusable instructions.
-    Only returns applications that have non-empty generation_notes.
+    Core ghost logic — runs against a provided connection.
+
+    Finds applications whose status is in _GHOSTABLE_STATUSES and whose most
+    recent status_change event (falling back to updated_at) is older than `days`
+    days. Transitions each to 'ghosted' and writes an event row.
+
+    Returns the list of application IDs that were ghosted.
     """
+    cutoff       = (datetime.now() - timedelta(days=days)).isoformat()
+    placeholders = ",".join("?" * len(_GHOSTABLE_STATUSES))
+
     rows = db.execute(
-        """
-        SELECT generation_notes, company, role, created_at
-        FROM applications
-        WHERE generation_notes IS NOT NULL
-          AND trim(generation_notes) != ''
-        ORDER BY created_at DESC
-        LIMIT ?
+        f"""
+        SELECT a.id, a.status,
+               COALESCE(
+                   (SELECT MAX(occurred_at) FROM application_events
+                    WHERE application_id = a.id AND event_type = 'status_change'),
+                   a.updated_at
+               ) AS last_status_change
+        FROM applications a
+        WHERE a.status IN ({placeholders})
         """,
-        (limit,),
+        _GHOSTABLE_STATUSES,
     ).fetchall()
 
-    # Deduplicate by note text, keeping the most recent occurrence
-    seen:   set[str]   = set()
-    result: list[dict] = []
+    ghosted_ids: list[str] = []
     for row in rows:
-        text = row["generation_notes"].strip()
-        if text not in seen:
-            seen.add(text)
-            result.append({
-                "text":    text,
-                "company": row["company"],
-                "role":    row["role"],
-            })
+        last = row["last_status_change"]
+        if last and last < cutoff:
+            db.execute(
+                "UPDATE applications SET status = 'ghosted' WHERE id = ?",
+                (row["id"],),
+            )
+            db.execute(
+                """INSERT INTO application_events
+                   (application_id, event_type, from_status, to_status, detail)
+                   VALUES (?, 'status_change', ?, 'ghosted', ?)""",
+                (row["id"], row["status"], f"Auto-ghosted after {days} days of inactivity"),
+            )
+            ghosted_ids.append(row["id"])
 
-    return result
+    return ghosted_ids
+
+
+def run_auto_ghost_job() -> None:
+    """
+    Called by APScheduler — manages its own DB connection via the context manager.
+    Safe to call from a background thread.
+    """
+    from pipeline.config import AUTO_GHOST_DAYS
+    from db.database import get_connection
+
+    try:
+        with get_connection() as db:
+            ghosted = _do_auto_ghost(db, AUTO_GHOST_DAYS)
+            if ghosted:
+                log.info("Auto-ghost: marked %d application(s) as ghosted", len(ghosted))
+            else:
+                log.debug("Auto-ghost: no applications eligible for ghosting")
+    except Exception:
+        log.exception("Auto-ghost job failed")
 
 
 # ── List & get ────────────────────────────────────────────────────────────────
@@ -152,6 +211,46 @@ def list_applications(
             "SELECT * FROM applications WHERE status != 'archived' ORDER BY created_at DESC"
         ).fetchall()
     return _with_applied_date(rows, db)
+
+
+@router.get("/recent-notes")
+def get_recent_notes(
+    limit: int = 10,
+    db: sqlite3.Connection = Depends(get_db),
+):
+    """
+    Return the most recent distinct generation notes for display on the
+    New Application page. Lets users re-use previous AI instructions.
+
+    Declared before /{app_id} to prevent FastAPI matching 'recent-notes'
+    as an app_id path parameter.
+    """
+    rows = db.execute(
+        """
+        SELECT generation_notes AS text, company, role
+        FROM applications
+        WHERE generation_notes IS NOT NULL
+          AND trim(generation_notes) != ''
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+
+    # Deduplicate by note text, keeping the most recent company/role context
+    seen:   set      = set()
+    result: list     = []
+    for row in rows:
+        text = row["text"].strip()
+        if text not in seen:
+            seen.add(text)
+            result.append({
+                "text":    text,
+                "company": row["company"],
+                "role":    row["role"],
+            })
+
+    return result
 
 
 @router.get("/{app_id}")
@@ -194,6 +293,11 @@ def create_manual_application(
            VALUES (?, 'status_change', ?, 'Application logged manually')""",
         (app_id, body.status)
     )
+
+    # Auto-set applied date when created with applied status and no explicit date given
+    if body.status == "applied" and not body.applied_date:
+        body.applied_date = today
+
     if body.applied_date:
         db.execute(
             "INSERT INTO application_dates (application_id, date_type, date) VALUES (?, 'applied', ?)",
@@ -240,10 +344,27 @@ def update_application(
                VALUES (?, 'status_change', ?, ?)""",
             (app_id, current["status"], updates["status"])
         )
+        # Auto-set applied date when transitioning to 'applied' with no existing date
+        if updates["status"] == "applied":
+            _upsert_applied_date_if_missing(app_id, db)
 
     updated = db.execute("SELECT * FROM applications WHERE id = ?", (app_id,)).fetchone()
     apps    = _with_applied_date([updated], db)
     return apps[0]
+
+
+# ── Auto-ghost endpoint ───────────────────────────────────────────────────────
+
+@router.post("/auto-ghost")
+def trigger_auto_ghost(db: sqlite3.Connection = Depends(get_db)):
+    """
+    Manually trigger the auto-ghost check.
+    Uses AUTO_GHOST_DAYS from config. Safe to call at any time.
+    """
+    from pipeline.config import AUTO_GHOST_DAYS
+    ghosted = _do_auto_ghost(db, AUTO_GHOST_DAYS)
+    log.info("Manual auto-ghost triggered: %d application(s) ghosted", len(ghosted))
+    return {"ghosted": len(ghosted), "ids": ghosted, "days_threshold": AUTO_GHOST_DAYS}
 
 
 # ── Delete ────────────────────────────────────────────────────────────────────
@@ -389,17 +510,24 @@ def upsert_applied_date(
     body: AppliedDateUpsert,
     db: sqlite3.Connection = Depends(get_db),
 ):
+    """
+    Upsert the applied date for an application.
+    Passing date=None or omitting it clears the applied date.
+    """
     if not db.execute("SELECT 1 FROM applications WHERE id = ?", (app_id,)).fetchone():
         raise HTTPException(status_code=404, detail="Application not found")
+
     db.execute(
         "DELETE FROM application_dates WHERE application_id = ? AND date_type = 'applied'",
         (app_id,)
     )
+
     if body.date:
         db.execute(
             "INSERT INTO application_dates (application_id, date_type, date) VALUES (?, 'applied', ?)",
             (app_id, body.date)
         )
+
     return {"status": "saved", "date": body.date}
 
 
@@ -425,7 +553,7 @@ def import_from_filesystem(db: sqlite3.Connection = Depends(get_db)):
             except Exception:
                 pass
         cv_content = ""
-        cv_path    = folder / "cv.md"
+        cv_path = folder / "cv.md"
         if cv_path.exists():
             cv_content = cv_path.read_text(encoding="utf-8")
         parts   = app_id.split("_", 2)

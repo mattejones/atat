@@ -10,6 +10,7 @@ interface PromptMeta {
   label:       string;
   description: string;
   personal:    boolean;
+  system:      boolean;
   exists:      boolean;
 }
 
@@ -65,10 +66,15 @@ export default function PromptsPage() {
                   className="flex items-center justify-between px-5 py-4 hover:bg-bg-surface transition-colors group"
                 >
                   <div className="space-y-0.5 min-w-0">
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-sm font-medium text-text-primary group-hover:text-accent transition-colors">
                         {p.label}
                       </span>
+                      {p.system && (
+                        <span className="text-[10px] font-medium text-rose-600 bg-rose-50 border border-rose-200 px-1.5 py-0.5 rounded">
+                          system
+                        </span>
+                      )}
                       {p.personal && (
                         <span className="text-[10px] font-medium text-amber-600 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">
                           personal

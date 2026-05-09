@@ -18,12 +18,32 @@ interface Signal {
   count:    number;
 }
 
+// ── System prompt warning ─────────────────────────────────────────────────────
+
+function SystemPromptWarning() {
+  return (
+    <div className="flex gap-3 px-4 py-3 bg-rose-50 border border-rose-200 rounded-lg">
+      <span className="text-rose-500 flex-shrink-0 mt-0.5">⚠</span>
+      <div className="space-y-1">
+        <p className="text-xs font-medium text-rose-700">System-level prompt</p>
+        <p className="text-xs text-rose-600 leading-relaxed">
+          This prompt contains JSON schema definitions and output format constraints
+          used directly by the generation pipeline. Editing the <strong>content and
+          instructions</strong> is safe — but modifying the structural schema, field
+          names, or format requirements may break CV generation or PDF rendering.
+          When in doubt, change only prose sections and test with a new application.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 // ── Signals panel ─────────────────────────────────────────────────────────────
 
 function SignalsPanel({ slug }: { slug: string }) {
-  const [signals, setSignals]   = useState<Signal[]>([]);
-  const [loading, setLoading]   = useState(true);
-  const [open, setOpen]         = useState(true);
+  const [signals, setSignals] = useState<Signal[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [open, setOpen]       = useState(true);
 
   useEffect(() => {
     fetch(`${API}/prompts/${slug}/signals`)
@@ -99,6 +119,7 @@ export default function PromptEditorPage() {
 
   const [label, setLabel]         = useState("");
   const [personal, setPersonal]   = useState(false);
+  const [system, setSystem]       = useState(false);
   const [content, setContent]     = useState("");
   const [edited, setEdited]       = useState("");
   const [view, setView]           = useState<ViewMode>("raw");
@@ -115,6 +136,7 @@ export default function PromptEditorPage() {
       .then((data) => {
         setLabel(data.label);
         setPersonal(data.personal);
+        setSystem(data.system);
         setContent(data.content);
         setEdited(data.content);
       })
@@ -157,10 +179,15 @@ export default function PromptEditorPage() {
             <span>/</span>
             <span className="text-text-secondary">{label || slug}</span>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <h1 className="text-xl font-semibold text-text-primary">
               {label || slug}
             </h1>
+            {system && (
+              <span className="text-xs font-medium text-rose-600 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded">
+                system
+              </span>
+            )}
             {personal && (
               <span className="text-xs font-medium text-amber-600 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded">
                 personal · not committed
@@ -185,6 +212,9 @@ export default function PromptEditorPage() {
           </button>
         </div>
       </div>
+
+      {/* System prompt warning — shown before the editor so it's impossible to miss */}
+      {system && <SystemPromptWarning />}
 
       {error && (
         <div className="px-4 py-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">

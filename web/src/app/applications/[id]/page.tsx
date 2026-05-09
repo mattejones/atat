@@ -1,14 +1,17 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
+import { createPortal } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+import { STATUS_LABELS, STATUS_FLOW, STATUS_STYLES } from "@/lib/statuses";
+
 const API = process.env.NEXT_PUBLIC_API_URL;
 
-type ViewMode = "preview" | "raw" | "pdf" | "reasoning" | "jd";
+type ViewMode = "preview" | "raw" | "reasoning" | "jd" | "history";
 
 const ARRANGEMENT_LABELS: Record<string, string> = {
   remote: "Remote",
@@ -26,11 +29,114 @@ const SECTION_LABELS: Record<string, string> = {
   certifications: "Certifications",
 };
 
+const EVENT_TYPE_LABELS: Record<string, string> = {
+  status_change:  "Status changed",
+  cv_edited:      "CV edited",
+  pdf_rendered:   "PDF rendered",
+  email_received: "Email received",
+  note_added:     "Note added",
+};
+
+// ── Inline status dropdown ────────────────────────────────────────────────────
+
+function InlineStatusDropdown({
+  appId,
+  status,
+  onUpdate,
+}: {
+  appId:    string;
+  status:   string;
+  onUpdate: (newStatus: string) => void;
+}) {
+  const [loading, setLoading] = useState(false);
+  const [open, setOpen]       = useState(false);
+  const [pos, setPos]         = useState({ top: 0, left: 0 });
+  const triggerRef            = useRef<HTMLButtonElement>(null);
+  const options               = STATUS_FLOW[status] ?? [];
+
+  function toggle() {
+    if (!open && triggerRef.current) {
+      const r = triggerRef.current.getBoundingClientRect();
+      setPos({ top: r.bottom + window.scrollY + 4, left: r.left + window.scrollX });
+    }
+    setOpen((o) => !o);
+  }
+
+  useEffect(() => {
+    if (!open) return;
+    function close() { setOpen(false); }
+    document.addEventListener("mousedown", close);
+    document.addEventListener("scroll", close, true);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("scroll", close, true);
+    };
+  }, [open]);
+
+  async function changeStatus(next: string) {
+    setOpen(false);
+    setLoading(true);
+    try {
+      const res = await fetch(`${API}/applications/${appId}`, {
+        method:  "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({ status: next }),
+      });
+      if (res.ok) onUpdate(next);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        onClick={toggle}
+        disabled={loading || options.length === 0}
+        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-opacity ${
+          STATUS_STYLES[status] ?? STATUS_STYLES.generated
+        } ${options.length > 0 ? "cursor-pointer hover:opacity-80" : "cursor-default"}`}
+      >
+        {loading
+          ? <span className="w-2 h-2 border border-current/40 border-t-current rounded-full animate-spin" />
+          : (STATUS_LABELS[status] ?? status)}
+        {options.length > 0 && !loading && (
+          <span className="opacity-50 text-[10px]">▾</span>
+        )}
+      </button>
+
+      {open && options.length > 0 && createPortal(
+        <div
+          onClick={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+          style={{ position: "absolute", top: pos.top, left: pos.left, minWidth: 180, zIndex: 9999 }}
+          className="bg-white border border-bg-border rounded-lg shadow-xl py-1"
+        >
+          <p className="px-3 py-1 text-[10px] font-semibold text-text-muted uppercase tracking-wide">
+            Move to
+          </p>
+          {options.map((s) => (
+            <button
+              key={s}
+              onClick={() => changeStatus(s)}
+              className="w-full text-left px-3 py-1.5 text-xs text-text-secondary hover:bg-bg-surface hover:text-text-primary transition-colors flex items-center gap-2"
+            >
+              <span className={`inline-block w-2 h-2 rounded-full border ${STATUS_STYLES[s]?.split(" ").find(c => c.startsWith("border")) ?? ""}`} />
+              {STATUS_LABELS[s] ?? s}
+            </button>
+          ))}
+        </div>,
+        document.body
+      )}
+    </>
+  );
+}
+
 // ── Sections panel ────────────────────────────────────────────────────────────
 
 function SectionsPanel({ appId, sections }: { appId: string; sections: any[] }) {
   if (!sections.length) return null;
-
   return (
     <div className="bg-bg-surface border border-bg-border rounded-xl px-5 py-4">
       <h2 className="text-xs font-semibold text-text-muted uppercase tracking-wide mb-3">
@@ -39,7 +145,6 @@ function SectionsPanel({ appId, sections }: { appId: string; sections: any[] }) 
       <div className="flex flex-wrap gap-2">
         {sections.map((section: any) => {
           const accepted = !!section.accepted_report_id;
-
           return (
             <Link
               key={section.id}
@@ -214,6 +319,120 @@ function Detail({ label, value }: { label: string; value: string }) {
   );
 }
 
+// ── Notes panel ───────────────────────────────────────────────────────────────
+
+function NotesPanel({ appId, initialNotes }: { appId: string; initialNotes: string }) {
+  const [notes, setNotes]   = useState(initialNotes ?? "");
+  const [saved, setSaved]   = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  async function save(value: string) {
+    setSaving(true);
+    try {
+      await fetch(`${API}/applications/${appId}`, {
+        method:  "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({ notes: value }),
+      });
+      setSaved(true);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="bg-bg-surface border border-bg-border rounded-xl px-5 py-4">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-xs font-semibold text-text-muted uppercase tracking-wide">Notes</h2>
+        {saving && <span className="text-[10px] text-text-muted">Saving…</span>}
+        {!saving && !saved && <span className="text-[10px] text-text-muted">Unsaved</span>}
+      </div>
+      <textarea
+        value={notes}
+        onChange={(e) => { setNotes(e.target.value); setSaved(false); }}
+        onBlur={(e) => { if (!saved) save(e.target.value); }}
+        placeholder="Add any notes about this application…"
+        rows={4}
+        className="w-full px-3 py-2 text-sm text-text-primary bg-bg-elevated border border-bg-border rounded-lg resize-y focus:outline-none focus:ring-2 focus:ring-accent/40 placeholder-text-muted leading-relaxed"
+      />
+    </div>
+  );
+}
+
+// ── History panel ─────────────────────────────────────────────────────────────
+
+function HistoryPanel({ appId }: { appId: string }) {
+  const [events, setEvents]   = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch(`${API}/applications/${appId}/events`)
+      .then((r) => r.json())
+      .then((data) => { setEvents(Array.isArray(data) ? data : []); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, [appId]);
+
+  function describeEvent(event: any): string {
+    if (event.event_type === "status_change") {
+      if (event.from_status) {
+        const from = STATUS_LABELS[event.from_status] ?? event.from_status;
+        const to   = STATUS_LABELS[event.to_status]   ?? event.to_status;
+        return `${from} → ${to}`;
+      }
+      return `Status set to ${STATUS_LABELS[event.to_status] ?? event.to_status}`;
+    }
+    return EVENT_TYPE_LABELS[event.event_type] ?? event.event_type.replace(/_/g, " ");
+  }
+
+  function formatDate(iso: string): string {
+    try {
+      return new Date(iso).toLocaleString("en-GB", {
+        day: "2-digit", month: "short", year: "numeric",
+        hour: "2-digit", minute: "2-digit",
+      });
+    } catch {
+      return iso;
+    }
+  }
+
+  return (
+    <div className="bg-bg-elevated p-8 min-h-[40vh]">
+      {loading && (
+        <p className="text-sm text-text-muted">Loading history…</p>
+      )}
+      {!loading && events.length === 0 && (
+        <p className="text-sm text-text-muted">No history recorded yet.</p>
+      )}
+      {!loading && events.length > 0 && (
+        // Flex-based timeline — avoids fragile absolute positioning against ol border-l.
+        // Vertical line is an explicit div positioned at the horizontal centre of the dot.
+        <div className="relative">
+          <div className="absolute left-[5px] top-2 bottom-2 w-px bg-bg-border" />
+          <div className="space-y-4">
+            {events.map((event) => (
+              <div key={event.id} className="relative flex items-start gap-4">
+                {/* Dot — 11px wide, centre at 5.5px, aligns with the line at left: 5px */}
+                <div className="relative z-10 flex-shrink-0 mt-[3px] w-[11px] h-[11px] rounded-full border-2 border-accent/50 bg-bg-elevated" />
+                <div className="min-w-0 pb-1">
+                  <p className="text-xs font-medium text-text-primary leading-snug">
+                    {describeEvent(event)}
+                  </p>
+                  {event.detail && (
+                    <p className="text-xs text-text-muted mt-0.5 leading-snug">{event.detail}</p>
+                  )}
+                  <p className="text-[10px] text-text-muted font-mono mt-1">
+                    {formatDate(event.occurred_at)}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Reasoning panel ───────────────────────────────────────────────────────────
 
 function ReasoningPanel({ content, hasReasoning }: { content: string; hasReasoning: boolean }) {
@@ -226,15 +445,10 @@ function ReasoningPanel({ content, hasReasoning }: { content: string; hasReasoni
             The model reasoned internally using its extended thinking budget before writing this CV.
             That reasoning is private to the model and not surfaced in the output — which means it worked as intended.
           </p>
-          <p className="text-xs text-text-muted mt-3">
-            Reasoning only appears here when the model outputs it as text, which happens
-            when extended thinking is disabled or the model uses the sentinel to separate its chain-of-thought.
-          </p>
         </div>
       </div>
     );
   }
-
   return (
     <div className="bg-bg-elevated p-8 min-h-[60vh] space-y-4">
       <div className="flex items-center gap-2 pb-3 border-b border-bg-border">
@@ -258,7 +472,6 @@ function JdPanel({ jdText }: { jdText: string }) {
       </div>
     );
   }
-
   return (
     <div className="bg-bg-elevated p-8 min-h-[40vh]">
       <p className="text-sm text-text-primary whitespace-pre-wrap leading-relaxed">{jdText}</p>
@@ -315,20 +528,20 @@ export default function ApplicationPage() {
     }
   }
 
-  async function handleSave() {
+  const handleSave = useCallback(async () => {
     setSaving(true);
     try {
       await fetch(`${API}/applications/${id}/cv`, {
-        method: "PUT",
+        method:  "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: edited }),
+        body:    JSON.stringify({ content: edited }),
       });
       setContent(edited);
       setDirty(false);
     } finally {
       setSaving(false);
     }
-  }
+  }, [id, edited]);
 
   async function handleRender() {
     setRendering(true);
@@ -341,7 +554,6 @@ export default function ApplicationPage() {
         throw new Error(data.detail || "Render failed");
       }
       setHasPdf(true);
-      setView("pdf");
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -351,9 +563,9 @@ export default function ApplicationPage() {
 
   async function handleRoleDetailsSave(updates: Record<string, any>) {
     const res = await fetch(`${API}/applications/${id}`, {
-      method: "PATCH",
+      method:  "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(updates),
+      body:    JSON.stringify(updates),
     });
     if (res.ok) setMeta(await res.json());
   }
@@ -363,17 +575,17 @@ export default function ApplicationPage() {
   const views: ViewMode[] = [
     "preview",
     "raw",
-    ...(hasPdf    ? (["pdf"] as ViewMode[]) : []),
-    ...(hasJd     ? (["jd"]  as ViewMode[]) : []),
+    ...(hasJd ? (["jd"] as ViewMode[]) : []),
     "reasoning",
+    "history",
   ];
 
   const VIEW_LABELS: Record<ViewMode, string> = {
     preview:   "Preview",
     raw:       "Raw",
-    pdf:       "PDF",
     jd:        "Job Description",
     reasoning: "🧠 Reasoning",
+    history:   "History",
   };
 
   return (
@@ -390,27 +602,47 @@ export default function ApplicationPage() {
             {meta?.company || "Application"}
             {meta?.role && <span className="font-normal text-text-secondary ml-2">— {meta.role}</span>}
           </h1>
+          {/* Status control — lives directly under the title */}
+          {meta && (
+            <div className="mt-2">
+              <InlineStatusDropdown
+                appId={id}
+                status={meta.status}
+                onUpdate={(newStatus) => setMeta((m: any) => m ? { ...m, status: newStatus } : m)}
+              />
+            </div>
+          )}
           {meta?.generated_at && (
-            <p className="text-xs text-text-muted mt-0.5">Generated {meta.generated_at}</p>
+            <p className="text-xs text-text-muted mt-1.5">Generated {meta.generated_at}</p>
           )}
         </div>
 
         <div className="flex items-center gap-2 flex-shrink-0">
           {dirty && (
-            <button onClick={handleSave} disabled={saving}
-              className="px-3 py-1.5 text-xs font-medium border border-accent text-accent rounded-lg hover:bg-accent/10 transition-colors disabled:opacity-50">
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="px-3 py-1.5 text-xs font-medium border border-accent text-accent rounded-lg hover:bg-accent/10 transition-colors disabled:opacity-50"
+            >
               {saving ? "Saving…" : "Save changes"}
             </button>
           )}
-          <button onClick={handleRender} disabled={rendering}
-            className="px-3 py-1.5 text-xs font-medium bg-accent text-white rounded-lg hover:bg-accent-dim transition-colors disabled:opacity-50 flex items-center gap-1.5">
+          <button
+            onClick={handleRender}
+            disabled={rendering}
+            className="px-3 py-1.5 text-xs font-medium bg-accent text-white rounded-lg hover:bg-accent-dim transition-colors disabled:opacity-50 flex items-center gap-1.5"
+          >
             {rendering
               ? <><span className="w-3 h-3 border border-white/30 border-t-white rounded-full animate-spin" />Rendering…</>
               : "Render PDF"}
           </button>
           {hasPdf && (
-            <a href={`${API}/applications/${id}/pdf`} target="_blank" rel="noopener noreferrer"
-              className="px-3 py-1.5 text-xs font-medium bg-bg-elevated border border-bg-border text-text-secondary rounded-lg hover:text-text-primary transition-colors">
+            <a
+              href={`${API}/applications/${id}/pdf`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-3 py-1.5 text-xs font-medium bg-bg-elevated border border-bg-border text-text-secondary rounded-lg hover:text-text-primary transition-colors"
+            >
               Download PDF
             </a>
           )}
@@ -422,7 +654,7 @@ export default function ApplicationPage() {
       )}
 
       {meta && <RoleDetails meta={meta} onSave={handleRoleDetailsSave} />}
-
+      {meta && <NotesPanel appId={id} initialNotes={meta.notes ?? ""} />}
       {sections.length > 0 && <SectionsPanel appId={id} sections={sections} />}
 
       {/* View toggle */}
@@ -445,20 +677,17 @@ export default function ApplicationPage() {
           </div>
         )}
         {view === "raw" && (
-          <textarea value={edited}
+          <textarea
+            value={edited}
             onChange={(e) => { setEdited(e.target.value); setDirty(e.target.value !== content); }}
+            onBlur={() => { if (dirty) handleSave(); }}
             className="w-full h-[70vh] p-6 font-mono text-xs text-text-primary bg-bg-elevated resize-none focus:outline-none leading-relaxed"
-            spellCheck={false} />
+            spellCheck={false}
+          />
         )}
-        {view === "pdf" && hasPdf && (
-          <iframe src={`${API}/applications/${id}/pdf`} className="w-full h-[85vh]" title="CV PDF" />
-        )}
-        {view === "jd" && (
-          <JdPanel jdText={meta?.jd_text ?? ""} />
-        )}
-        {view === "reasoning" && (
-          <ReasoningPanel content={reasoning} hasReasoning={hasReasoning} />
-        )}
+        {view === "jd" && <JdPanel jdText={meta?.jd_text ?? ""} />}
+        {view === "reasoning" && <ReasoningPanel content={reasoning} hasReasoning={hasReasoning} />}
+        {view === "history" && <HistoryPanel appId={id} />}
       </div>
     </div>
   );

@@ -282,7 +282,7 @@ export default function GeneratePage() {
             <textarea value={notes} onChange={(e) => setNotes(e.target.value)}
               placeholder={`e.g. "This role clearly values n8n experience — highlight integration work across the library."`}
               rows={3} disabled={generating}
-              className="w-full px-3 py-2 bg-bg-elevated border border-bg-border rounded-lg text-sm text-text-primary placeholder-text-muted focus:outline-none focus:ring-2 focus:ring-accent/40 resize-none leading-relaxed disabled:opacity-50" />
+              className="w-full px-3 py-2 bg-bg-elevated border border-bg-border rounded-lg text-sm text-text-primary placeholder-text-muted focus:outline-none focus:ring-2 focus:ring-accent/40 resize-y leading-relaxed disabled:opacity-50" />
           </div>
           <PreviousNotes onSelect={setNotes} />
         </div>

@@ -66,5 +66,13 @@ ENABLE_CACHING    = os.getenv("ENABLE_CACHING",  "true").lower() == "true"
 # ── Rendering ─────────────────────────────────────────────────────────────────
 RENDER_PDF = os.getenv("RENDER_PDF", "true").lower() == "true"
 
+# ── Scheduler / auto-ghost ────────────────────────────────────────────────────
+# AUTO_GHOST_ENABLED   — whether the background scheduler runs at all
+# AUTO_GHOST_DAYS      — days of inactivity before an application is ghosted
+# SCHEDULER_INTERVAL_HOURS — how often the ghost check runs
+AUTO_GHOST_ENABLED       = os.getenv("AUTO_GHOST_ENABLED",       "true").lower() == "true"
+AUTO_GHOST_DAYS          = int(os.getenv("AUTO_GHOST_DAYS",          "21"))
+SCHEDULER_INTERVAL_HOURS = int(os.getenv("SCHEDULER_INTERVAL_HOURS", "6"))
+
 # ── Logging ───────────────────────────────────────────────────────────────────
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
