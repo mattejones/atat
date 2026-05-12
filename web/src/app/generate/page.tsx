@@ -37,8 +37,6 @@ const LOADING_MESSAGES = [
   "Cross-referencing with parallel universe where you got the last job…",
 ];
 
-// ── Loading overlay ───────────────────────────────────────────────────────────
-
 function GeneratingOverlay({ company, role }: { company: string; role: string }) {
   const [tick, setTick] = useState(0);
   const [startIdx]      = useState(() => Math.floor(Math.random() * LOADING_MESSAGES.length));
@@ -76,8 +74,6 @@ function GeneratingOverlay({ company, role }: { company: string; role: string })
   );
 }
 
-// ── Previous notes ────────────────────────────────────────────────────────────
-
 interface PreviousNote {
   text:    string;
   company: string;
@@ -103,9 +99,7 @@ function PreviousNotes({ onSelect }: { onSelect: (text: string) => void }) {
         onClick={() => setOpen((o) => !o)}
         className="w-full flex items-center justify-between px-4 py-2.5 bg-bg-surface hover:bg-bg-elevated transition-colors text-left"
       >
-        <span className="text-xs font-medium text-text-secondary">
-          Previous instructions
-        </span>
+        <span className="text-xs font-medium text-text-secondary">Previous instructions</span>
         <span className="text-text-muted text-xs">{open ? "▲" : "▼"}</span>
       </button>
 
@@ -117,9 +111,7 @@ function PreviousNotes({ onSelect }: { onSelect: (text: string) => void }) {
               onClick={() => onSelect(note.text)}
               className="w-full text-left px-4 py-3 hover:bg-bg-surface transition-colors group"
             >
-              <p className="text-[10px] text-text-muted mb-1">
-                {note.company} — {note.role}
-              </p>
+              <p className="text-[10px] text-text-muted mb-1">{note.company} — {note.role}</p>
               <p className="text-xs text-text-secondary group-hover:text-text-primary transition-colors leading-relaxed">
                 {note.text}
               </p>
@@ -130,8 +122,6 @@ function PreviousNotes({ onSelect }: { onSelect: (text: string) => void }) {
     </div>
   );
 }
-
-// ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function GeneratePage() {
   const router = useRouter();
@@ -187,7 +177,7 @@ export default function GeneratePage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Generation failed");
-      router.push(`/applications/${data.app_id}`);
+      router.push(`/applications/${data.uuid}`);
     } catch (e: any) {
       setError(e.message);
       setGenerating(false);
@@ -206,7 +196,6 @@ export default function GeneratePage() {
           </p>
         </div>
 
-        {/* Company + Role */}
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-1">
             <label className="text-xs font-medium text-text-secondary uppercase tracking-wide">Company</label>
@@ -222,7 +211,6 @@ export default function GeneratePage() {
           </div>
         </div>
 
-        {/* Mode toggle + JD input */}
         <div className="space-y-3">
           <div className="flex gap-1 bg-bg-surface rounded-lg p-1 w-fit border border-bg-border">
             {(["paste", "url"] as InputMode[]).map((m) => (
@@ -272,7 +260,6 @@ export default function GeneratePage() {
           )}
         </div>
 
-        {/* Notes for the AI */}
         <div className="space-y-2">
           <div className="space-y-1">
             <label className="text-xs font-medium text-text-secondary uppercase tracking-wide">
