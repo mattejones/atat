@@ -1,5 +1,13 @@
 """
 applications.py — Routes for managing job applications.
+
+All routes that accept an application identifier in the URL path now use
+the application's uuid column, not the id (slug) column. The id column
+remains the primary key used by FK relationships and filesystem paths.
+
+Lookup pattern throughout this module:
+  app = _get_app_by_uuid(app_uuid, db)
+  app_id = app["id"]   # use for FK queries and filesystem operations
 """
 
 import json
@@ -49,7 +57,7 @@ class DateCreate(BaseModel):
 
 
 class AppliedDateUpsert(BaseModel):
-    date: Optional[str] = None  # None or empty = delete
+    date: Optional[str] = None
 
 
 class ManualApplicationCreate(BaseModel):
@@ -72,11 +80,24 @@ VALID_TIERS        = {"T1", "T2", "T3", "EX1"}
 VALID_ARRANGEMENTS = {"remote", "hybrid", "office"}
 VALID_QA_TONES     = {"professional", "direct", "conversational", "technical"}
 
-# Statuses eligible for auto-ghosting — active but waiting on employer response
 _GHOSTABLE_STATUSES = ("applied", "acknowledged", "interviewing", "case_study")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _slugify(text: str, max_len: int) -> str:
+    return re.sub(r'[^a-z0-9]+', '-', text.lower())[:max_len].strip('-')
+
+
+def _get_app_by_uuid(app_uuid: str, db: sqlite3.Connection) -> dict:
+    """Look up an application by its uuid column. Raises 404 if not found."""
+    row = db.execute(
+        "SELECT * FROM applications WHERE uuid = ?", (app_uuid,)
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Application not found")
+    return row_to_dict(row)
+
 
 def _enrich(app: dict) -> dict:
     out_dir = Path(app.get("output_dir") or "")
@@ -86,10 +107,6 @@ def _enrich(app: dict) -> dict:
 
 
 def _with_applied_date(rows: list, db: sqlite3.Connection) -> list[dict]:
-    """
-    Enrich a list of application rows with their applied_date from application_dates.
-    Uses a single query rather than N+1.
-    """
     apps = [_enrich(row_to_dict(r)) for r in rows]
     if not apps:
         return apps
@@ -103,7 +120,6 @@ def _with_applied_date(rows: list, db: sqlite3.Connection) -> list[dict]:
         ids,
     ).fetchall()
 
-    # Keep only the most recent applied date per application
     date_map: dict[str, str] = {}
     for row in date_rows:
         app_id = row["application_id"]
@@ -117,10 +133,6 @@ def _with_applied_date(rows: list, db: sqlite3.Connection) -> list[dict]:
 
 
 def _upsert_applied_date_if_missing(app_id: str, db: sqlite3.Connection) -> None:
-    """
-    Insert today as the applied date only if no applied date already exists.
-    Called automatically when status transitions to 'applied'.
-    """
     existing = db.execute(
         "SELECT 1 FROM application_dates WHERE application_id = ? AND date_type = 'applied'",
         (app_id,),
@@ -135,15 +147,6 @@ def _upsert_applied_date_if_missing(app_id: str, db: sqlite3.Connection) -> None
 # ── Auto-ghost logic ──────────────────────────────────────────────────────────
 
 def _do_auto_ghost(db: sqlite3.Connection, days: int) -> list[str]:
-    """
-    Core ghost logic — runs against a provided connection.
-
-    Finds applications whose status is in _GHOSTABLE_STATUSES and whose most
-    recent status_change event (falling back to updated_at) is older than `days`
-    days. Transitions each to 'ghosted' and writes an event row.
-
-    Returns the list of application IDs that were ghosted.
-    """
     cutoff       = (datetime.now() - timedelta(days=days)).isoformat()
     placeholders = ",".join("?" * len(_GHOSTABLE_STATUSES))
 
@@ -165,10 +168,7 @@ def _do_auto_ghost(db: sqlite3.Connection, days: int) -> list[str]:
     for row in rows:
         last = row["last_status_change"]
         if last and last < cutoff:
-            db.execute(
-                "UPDATE applications SET status = 'ghosted' WHERE id = ?",
-                (row["id"],),
-            )
+            db.execute("UPDATE applications SET status = 'ghosted' WHERE id = ?", (row["id"],))
             db.execute(
                 """INSERT INTO application_events
                    (application_id, event_type, from_status, to_status, detail)
@@ -181,10 +181,6 @@ def _do_auto_ghost(db: sqlite3.Connection, days: int) -> list[str]:
 
 
 def run_auto_ghost_job() -> None:
-    """
-    Called by APScheduler — manages its own DB connection via the context manager.
-    Safe to call from a background thread.
-    """
     from pipeline.config import AUTO_GHOST_DAYS
     from db.database import get_connection
 
@@ -221,11 +217,9 @@ def get_recent_notes(
     db: sqlite3.Connection = Depends(get_db),
 ):
     """
-    Return the most recent distinct generation notes for display on the
-    New Application page. Lets users re-use previous AI instructions.
-
-    Declared before /{app_id} to prevent FastAPI matching 'recent-notes'
-    as an app_id path parameter.
+    Return the most recent distinct generation notes.
+    Declared before /{app_uuid} to prevent FastAPI matching 'recent-notes'
+    as a uuid path parameter.
     """
     rows = db.execute(
         """
@@ -239,29 +233,21 @@ def get_recent_notes(
         (limit,),
     ).fetchall()
 
-    # Deduplicate by note text, keeping the most recent company/role context
-    seen:   set      = set()
-    result: list     = []
+    seen:   set  = set()
+    result: list = []
     for row in rows:
         text = row["text"].strip()
         if text not in seen:
             seen.add(text)
-            result.append({
-                "text":    text,
-                "company": row["company"],
-                "role":    row["role"],
-            })
-
+            result.append({"text": text, "company": row["company"], "role": row["role"]})
     return result
 
 
-@router.get("/{app_id}")
-def get_application(app_id: str, db: sqlite3.Connection = Depends(get_db)):
-    row = db.execute("SELECT * FROM applications WHERE id = ?", (app_id,)).fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="Application not found")
-    apps = _with_applied_date([row], db)
-    return apps[0]
+@router.get("/{app_uuid}")
+def get_application(app_uuid: str, db: sqlite3.Connection = Depends(get_db)):
+    app = _get_app_by_uuid(app_uuid, db)
+    row = db.execute("SELECT * FROM applications WHERE id = ?", (app["id"],)).fetchone()
+    return _with_applied_date([row], db)[0]
 
 
 # ── Create (manual) ───────────────────────────────────────────────────────────
@@ -269,15 +255,16 @@ def get_application(app_id: str, db: sqlite3.Connection = Depends(get_db)):
 @router.post("")
 def create_manual_application(
     body: ManualApplicationCreate,
-    db: sqlite3.Connection = Depends(get_db),
+    db:   sqlite3.Connection = Depends(get_db),
 ):
     if body.status not in VALID_STATUSES:
         raise HTTPException(status_code=422, detail=f"Invalid status: {body.status}")
 
     today        = date.today().isoformat()
-    company_slug = re.sub(r'[^a-z0-9]+', '-', body.company.lower())[:30].strip('-')
-    role_slug    = re.sub(r'[^a-z0-9]+', '-', body.role.lower())[:40].strip('-')
+    company_slug = _slugify(body.company, 30)
+    role_slug    = _slugify(body.role, 40)
     app_id       = f"{today}_{company_slug}_{role_slug}"
+    app_uuid     = str(uuid.uuid4())
 
     if db.execute("SELECT 1 FROM applications WHERE id = ?", (app_id,)).fetchone():
         app_id = f"{app_id}_{str(uuid.uuid4())[:6]}"
@@ -285,9 +272,9 @@ def create_manual_application(
     now = datetime.now().isoformat()
     db.execute(
         """INSERT INTO applications
-           (id, company, role, source_url, status, notes, has_pdf, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)""",
-        (app_id, body.company, body.role, body.source_url, body.status, body.notes, now, now)
+           (id, uuid, company, role, source_url, status, notes, has_pdf, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)""",
+        (app_id, app_uuid, body.company, body.role, body.source_url, body.status, body.notes, now, now)
     )
     db.execute(
         """INSERT INTO application_events
@@ -296,7 +283,6 @@ def create_manual_application(
         (app_id, body.status)
     )
 
-    # Auto-set applied date when created with applied status and no explicit date given
     if body.status == "applied" and not body.applied_date:
         body.applied_date = today
 
@@ -307,27 +293,24 @@ def create_manual_application(
         )
 
     row  = db.execute("SELECT * FROM applications WHERE id = ?", (app_id,)).fetchone()
-    apps = _with_applied_date([row], db)
-    return apps[0]
+    return _with_applied_date([row], db)[0]
 
 
 # ── Update ────────────────────────────────────────────────────────────────────
 
-@router.patch("/{app_id}")
+@router.patch("/{app_uuid}")
 def update_application(
-    app_id: str,
-    body: ApplicationUpdate,
-    db: sqlite3.Connection = Depends(get_db),
+    app_uuid: str,
+    body:     ApplicationUpdate,
+    db:       sqlite3.Connection = Depends(get_db),
 ):
-    row = db.execute("SELECT * FROM applications WHERE id = ?", (app_id,)).fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="Application not found")
+    app    = _get_app_by_uuid(app_uuid, db)
+    app_id = app["id"]
 
-    current = row_to_dict(row)
     updates = body.model_dump(exclude_none=True)
     if not updates:
-        apps = _with_applied_date([row], db)
-        return apps[0]
+        row = db.execute("SELECT * FROM applications WHERE id = ?", (app_id,)).fetchone()
+        return _with_applied_date([row], db)[0]
 
     if "status" in updates and updates["status"] not in VALID_STATUSES:
         raise HTTPException(status_code=422, detail=f"Invalid status: {updates['status']}")
@@ -341,50 +324,42 @@ def update_application(
     set_clause = ", ".join(f"{k} = ?" for k in updates)
     db.execute(f"UPDATE applications SET {set_clause} WHERE id = ?", list(updates.values()) + [app_id])
 
-    if "status" in updates and updates["status"] != current["status"]:
+    if "status" in updates and updates["status"] != app["status"]:
         db.execute(
             """INSERT INTO application_events
                (application_id, event_type, from_status, to_status)
                VALUES (?, 'status_change', ?, ?)""",
-            (app_id, current["status"], updates["status"])
+            (app_id, app["status"], updates["status"])
         )
-        # Auto-set applied date when transitioning to 'applied' with no existing date
         if updates["status"] == "applied":
             _upsert_applied_date_if_missing(app_id, db)
 
     updated = db.execute("SELECT * FROM applications WHERE id = ?", (app_id,)).fetchone()
-    apps    = _with_applied_date([updated], db)
-    return apps[0]
+    return _with_applied_date([updated], db)[0]
 
 
 # ── Auto-ghost endpoint ───────────────────────────────────────────────────────
 
 @router.post("/auto-ghost")
 def trigger_auto_ghost(db: sqlite3.Connection = Depends(get_db)):
-    """
-    Manually trigger the auto-ghost check.
-    Uses AUTO_GHOST_DAYS from config. Safe to call at any time.
-    """
     from pipeline.config import AUTO_GHOST_DAYS
     ghosted = _do_auto_ghost(db, AUTO_GHOST_DAYS)
-    log.info("Manual auto-ghost triggered: %d application(s) ghosted", len(ghosted))
     return {"ghosted": len(ghosted), "ids": ghosted, "days_threshold": AUTO_GHOST_DAYS}
 
 
 # ── Delete ────────────────────────────────────────────────────────────────────
 
-@router.delete("/{app_id}")
+@router.delete("/{app_uuid}")
 def delete_application(
-    app_id: str,
+    app_uuid:     str,
     delete_files: bool = False,
-    db: sqlite3.Connection = Depends(get_db),
+    db:           sqlite3.Connection = Depends(get_db),
 ):
-    row = db.execute("SELECT output_dir FROM applications WHERE id = ?", (app_id,)).fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="Application not found")
+    app    = _get_app_by_uuid(app_uuid, db)
+    app_id = app["id"]
     db.execute("DELETE FROM applications WHERE id = ?", (app_id,))
-    if delete_files and row["output_dir"]:
-        out = Path(row["output_dir"])
+    if delete_files and app.get("output_dir"):
+        out = Path(app["output_dir"])
         if out.exists():
             shutil.rmtree(out)
     return {"status": "deleted", "files_removed": delete_files}
@@ -392,16 +367,13 @@ def delete_application(
 
 # ── CV Markdown ───────────────────────────────────────────────────────────────
 
-@router.get("/{app_id}/cv")
-def get_cv_markdown(app_id: str, db: sqlite3.Connection = Depends(get_db)):
-    row = db.execute(
-        "SELECT cv_markdown, output_dir FROM applications WHERE id = ?", (app_id,)
-    ).fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="Application not found")
-    content = row["cv_markdown"]
-    if not content and row["output_dir"]:
-        cv_path = Path(row["output_dir"]) / "cv.md"
+@router.get("/{app_uuid}/cv")
+def get_cv_markdown(app_uuid: str, db: sqlite3.Connection = Depends(get_db)):
+    app    = _get_app_by_uuid(app_uuid, db)
+    app_id = app["id"]
+    content = app.get("cv_markdown")
+    if not content and app.get("output_dir"):
+        cv_path = Path(app["output_dir"]) / "cv.md"
         if cv_path.exists():
             content = cv_path.read_text(encoding="utf-8")
     if not content:
@@ -409,19 +381,18 @@ def get_cv_markdown(app_id: str, db: sqlite3.Connection = Depends(get_db)):
     return {"content": content}
 
 
-@router.put("/{app_id}/cv")
-def update_cv_markdown(app_id: str, body: dict, db: sqlite3.Connection = Depends(get_db)):
-    row = db.execute("SELECT output_dir FROM applications WHERE id = ?", (app_id,)).fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="Application not found")
+@router.put("/{app_uuid}/cv")
+def update_cv_markdown(app_uuid: str, body: dict, db: sqlite3.Connection = Depends(get_db)):
+    app    = _get_app_by_uuid(app_uuid, db)
+    app_id = app["id"]
     content = body.get("content", "")
     db.execute("UPDATE applications SET cv_markdown = ? WHERE id = ?", (content, app_id))
     db.execute(
         "INSERT INTO application_events (application_id, event_type, detail) VALUES (?, 'cv_edited', 'CV Markdown updated')",
         (app_id,)
     )
-    if row["output_dir"]:
-        cv_path = Path(row["output_dir"]) / "cv.md"
+    if app.get("output_dir"):
+        cv_path = Path(app["output_dir"]) / "cv.md"
         if cv_path.parent.exists():
             cv_path.write_text(content, encoding="utf-8")
     return {"status": "saved"}
@@ -429,24 +400,24 @@ def update_cv_markdown(app_id: str, body: dict, db: sqlite3.Connection = Depends
 
 # ── PDF ───────────────────────────────────────────────────────────────────────
 
-@router.get("/{app_id}/pdf")
-def get_pdf(app_id: str, db: sqlite3.Connection = Depends(get_db)):
-    row = db.execute(
-        "SELECT output_dir, company, cv_markdown FROM applications WHERE id = ?", (app_id,)
-    ).fetchone()
-    if not row or not row["output_dir"]:
+@router.get("/{app_uuid}/pdf")
+def get_pdf(app_uuid: str, db: sqlite3.Connection = Depends(get_db)):
+    app    = _get_app_by_uuid(app_uuid, db)
+    app_id = app["id"]
+
+    if not app.get("output_dir"):
         raise HTTPException(status_code=404, detail="Application not found")
 
-    pdf_path = Path(row["output_dir"]) / "cv.pdf"
+    pdf_path = Path(app["output_dir"]) / "cv.pdf"
     if not pdf_path.exists():
         raise HTTPException(status_code=404, detail="PDF not found — render it first")
 
     try:
         from pipeline.parse_cv import parse_cv
         from pipeline.render import pdf_filename
-        if row["cv_markdown"]:
-            cv            = parse_cv(row["cv_markdown"])
-            download_name = pdf_filename(cv.name, row["company"] or "")
+        if app.get("cv_markdown"):
+            cv            = parse_cv(app["cv_markdown"])
+            download_name = pdf_filename(cv.name, app.get("company") or "")
         else:
             download_name = f"{app_id}.pdf"
     except Exception:
@@ -457,16 +428,13 @@ def get_pdf(app_id: str, db: sqlite3.Connection = Depends(get_db)):
 
 # ── Reasoning ─────────────────────────────────────────────────────────────────
 
-@router.get("/{app_id}/reasoning")
-def get_reasoning(app_id: str, db: sqlite3.Connection = Depends(get_db)):
-    row = db.execute(
-        "SELECT reasoning, output_dir FROM applications WHERE id = ?", (app_id,)
-    ).fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="Application not found")
-    reasoning = row["reasoning"]
-    if not reasoning and row["output_dir"]:
-        r_path = Path(row["output_dir"]) / "reasoning.md"
+@router.get("/{app_uuid}/reasoning")
+def get_reasoning(app_uuid: str, db: sqlite3.Connection = Depends(get_db)):
+    app    = _get_app_by_uuid(app_uuid, db)
+    app_id = app["id"]
+    reasoning = app.get("reasoning")
+    if not reasoning and app.get("output_dir"):
+        r_path = Path(app["output_dir"]) / "reasoning.md"
         if r_path.exists():
             reasoning = r_path.read_text(encoding="utf-8")
     return {"content": reasoning or "", "has_reasoning": bool(reasoning)}
@@ -474,8 +442,10 @@ def get_reasoning(app_id: str, db: sqlite3.Connection = Depends(get_db)):
 
 # ── Events ────────────────────────────────────────────────────────────────────
 
-@router.get("/{app_id}/events")
-def get_events(app_id: str, db: sqlite3.Connection = Depends(get_db)):
+@router.get("/{app_uuid}/events")
+def get_events(app_uuid: str, db: sqlite3.Connection = Depends(get_db)):
+    app    = _get_app_by_uuid(app_uuid, db)
+    app_id = app["id"]
     rows = db.execute(
         "SELECT * FROM application_events WHERE application_id = ? ORDER BY occurred_at DESC",
         (app_id,)
@@ -485,8 +455,10 @@ def get_events(app_id: str, db: sqlite3.Connection = Depends(get_db)):
 
 # ── Dates ─────────────────────────────────────────────────────────────────────
 
-@router.get("/{app_id}/dates")
-def get_dates(app_id: str, db: sqlite3.Connection = Depends(get_db)):
+@router.get("/{app_uuid}/dates")
+def get_dates(app_uuid: str, db: sqlite3.Connection = Depends(get_db)):
+    app    = _get_app_by_uuid(app_uuid, db)
+    app_id = app["id"]
     rows = db.execute(
         "SELECT * FROM application_dates WHERE application_id = ? ORDER BY date",
         (app_id,)
@@ -494,8 +466,10 @@ def get_dates(app_id: str, db: sqlite3.Connection = Depends(get_db)):
     return rows_to_list(rows)
 
 
-@router.post("/{app_id}/dates")
-def add_date(app_id: str, body: DateCreate, db: sqlite3.Connection = Depends(get_db)):
+@router.post("/{app_uuid}/dates")
+def add_date(app_uuid: str, body: DateCreate, db: sqlite3.Connection = Depends(get_db)):
+    app    = _get_app_by_uuid(app_uuid, db)
+    app_id = app["id"]
     db.execute(
         "INSERT INTO application_dates (application_id, date_type, date, notes) VALUES (?, ?, ?, ?)",
         (app_id, body.date_type, body.date, body.notes)
@@ -508,30 +482,23 @@ def add_date(app_id: str, body: DateCreate, db: sqlite3.Connection = Depends(get
     return {"status": "created"}
 
 
-@router.put("/{app_id}/dates/applied")
+@router.put("/{app_uuid}/dates/applied")
 def upsert_applied_date(
-    app_id: str,
-    body: AppliedDateUpsert,
-    db: sqlite3.Connection = Depends(get_db),
+    app_uuid: str,
+    body:     AppliedDateUpsert,
+    db:       sqlite3.Connection = Depends(get_db),
 ):
-    """
-    Upsert the applied date for an application.
-    Passing date=None or omitting it clears the applied date.
-    """
-    if not db.execute("SELECT 1 FROM applications WHERE id = ?", (app_id,)).fetchone():
-        raise HTTPException(status_code=404, detail="Application not found")
-
+    app    = _get_app_by_uuid(app_uuid, db)
+    app_id = app["id"]
     db.execute(
         "DELETE FROM application_dates WHERE application_id = ? AND date_type = 'applied'",
         (app_id,)
     )
-
     if body.date:
         db.execute(
             "INSERT INTO application_dates (application_id, date_type, date) VALUES (?, 'applied', ?)",
             (app_id, body.date)
         )
-
     return {"status": "saved", "date": body.date}
 
 
@@ -565,12 +532,13 @@ def import_from_filesystem(db: sqlite3.Connection = Depends(get_db)):
         role    = parts[2].replace("-", " ").title() if len(parts) > 2 else ""
         has_pdf = (folder / "cv.pdf").exists()
         now     = datetime.now().isoformat()
+        app_uuid = str(uuid.uuid4())
         db.execute(
             """INSERT INTO applications
-               (id, company, role, cv_markdown, output_dir, has_pdf,
+               (id, uuid, company, role, cv_markdown, output_dir, has_pdf,
                 model, provider, status, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'generated', ?, ?)""",
-            (app_id, company, role, cv_content, str(folder), int(has_pdf),
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'generated', ?, ?)""",
+            (app_id, app_uuid, company, role, cv_content, str(folder), int(has_pdf),
              meta.get("model", ""), meta.get("provider", ""), now, now)
         )
         imported += 1

@@ -14,7 +14,8 @@ type SortKey = "applied_date" | "company" | "role" | "status";
 type SortDir = "asc" | "desc";
 
 interface Application {
-  id:           string;
+  id:           string;   // slug — used for display only
+  uuid:         string;   // used for all navigation and API calls
   created_at:   string;
   applied_date: string | null;
   company:      string;
@@ -24,13 +25,11 @@ interface Application {
 }
 
 interface EditState {
-  id:           string;
+  uuid:         string;   // used for API calls
   company:      string;
   role:         string;
   applied_date: string;
 }
-
-// ── Portal dropdown hook ───────────────────────────────────────────────────────
 
 interface PortalPos { top: number; left: number; width: number }
 
@@ -72,7 +71,7 @@ function StatusDropdown({
   onUpdate,
 }: {
   app: Application;
-  onUpdate: (id: string, status: string) => void;
+  onUpdate: (uuid: string, status: string) => void;
 }) {
   const [loading, setLoading] = useState(false);
   const { open, setOpen, pos, triggerRef, toggle } = usePortalDropdown();
@@ -82,12 +81,12 @@ function StatusDropdown({
     setOpen(false);
     setLoading(true);
     try {
-      const res = await fetch(`${API}/applications/${app.id}`, {
-        method: "PATCH",
+      const res = await fetch(`${API}/applications/${app.uuid}`, {
+        method:  "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: next }),
+        body:    JSON.stringify({ status: next }),
       });
-      if (res.ok) onUpdate(app.id, next);
+      if (res.ok) onUpdate(app.uuid, next);
     } finally {
       setLoading(false);
     }
@@ -110,10 +109,6 @@ function StatusDropdown({
       </button>
 
       {open && options.length > 0 && createPortal(
-        // onClick here catches all clicks inside the portal and stops them
-        // bubbling through the React tree to the table row's onClick handler.
-        // React portals escape the DOM tree but NOT the React component tree,
-        // so without this, selecting a status would also trigger navigation.
         <div
           onClick={(e) => e.stopPropagation()}
           onMouseDown={(e) => e.stopPropagation()}
@@ -139,7 +134,7 @@ function StatusDropdown({
   );
 }
 
-// ── Actions menu (three dots) ──────────────────────────────────────────────────
+// ── Actions menu ──────────────────────────────────────────────────────────────
 
 function ActionsMenu({
   app,
@@ -149,8 +144,8 @@ function ActionsMenu({
 }: {
   app:       Application;
   onEdit:    (app: Application) => void;
-  onArchive: (id: string) => void;
-  onDelete:  (id: string) => void;
+  onArchive: (uuid: string) => void;
+  onDelete:  (uuid: string) => void;
 }) {
   const [confirm, setConfirm] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -160,12 +155,12 @@ function ActionsMenu({
   async function archive() {
     setLoading(true);
     try {
-      const res = await fetch(`${API}/applications/${app.id}`, {
-        method: "PATCH",
+      const res = await fetch(`${API}/applications/${app.uuid}`, {
+        method:  "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: "archived" }),
+        body:    JSON.stringify({ status: "archived" }),
       });
-      if (res.ok) onArchive(app.id);
+      if (res.ok) onArchive(app.uuid);
     } finally {
       setLoading(false);
       setOpen(false);
@@ -175,8 +170,8 @@ function ActionsMenu({
   async function hardDelete() {
     setLoading(true);
     try {
-      await fetch(`${API}/applications/${app.id}?delete_files=false`, { method: "DELETE" });
-      onDelete(app.id);
+      await fetch(`${API}/applications/${app.uuid}?delete_files=false`, { method: "DELETE" });
+      onDelete(app.uuid);
     } finally {
       setLoading(false);
       setOpen(false);
@@ -250,8 +245,6 @@ function ActionsMenu({
   );
 }
 
-// ── Sort indicator ─────────────────────────────────────────────────────────────
-
 function SortIndicator({ col, sortKey, sortDir }: { col: SortKey; sortKey: SortKey; sortDir: SortDir }) {
   if (col !== sortKey) return <span className="opacity-20 ml-1">↕</span>;
   return <span className="ml-1 text-accent">{sortDir === "asc" ? "↑" : "↓"}</span>;
@@ -293,8 +286,7 @@ export default function ApplicationsTable({
       : apps;
 
     return [...filtered].sort((a, b) => {
-      let av = "";
-      let bv = "";
+      let av = "", bv = "";
       switch (sortKey) {
         case "applied_date": av = a.applied_date ?? ""; bv = b.applied_date ?? ""; break;
         case "company":      av = a.company.toLowerCase(); bv = b.company.toLowerCase(); break;
@@ -306,15 +298,15 @@ export default function ApplicationsTable({
     });
   }, [apps, search, sortKey, sortDir]);
 
-  function updateStatus(id: string, status: string) {
-    setApps((prev) => prev.map((a) => a.id === id ? { ...a, status } : a));
+  function updateStatus(appUuid: string, status: string) {
+    setApps((prev) => prev.map((a) => a.uuid === appUuid ? { ...a, status } : a));
   }
-  function removeApp(id: string) {
-    setApps((prev) => prev.filter((a) => a.id !== id));
+  function removeApp(appUuid: string) {
+    setApps((prev) => prev.filter((a) => a.uuid !== appUuid));
   }
   function startEdit(app: Application) {
     setEditing({
-      id:           app.id,
+      uuid:         app.uuid,
       company:      app.company,
       role:         app.role,
       applied_date: app.applied_date ?? "",
@@ -326,22 +318,22 @@ export default function ApplicationsTable({
     if (!editing) return;
     setSaving(true);
     try {
-      const patchRes = await fetch(`${API}/applications/${editing.id}`, {
-        method: "PATCH",
+      const patchRes = await fetch(`${API}/applications/${editing.uuid}`, {
+        method:  "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ company: editing.company, role: editing.role }),
+        body:    JSON.stringify({ company: editing.company, role: editing.role }),
       });
 
-      await fetch(`${API}/applications/${editing.id}/dates/applied`, {
-        method: "PUT",
+      await fetch(`${API}/applications/${editing.uuid}/dates/applied`, {
+        method:  "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ date: editing.applied_date || null }),
+        body:    JSON.stringify({ date: editing.applied_date || null }),
       });
 
       if (patchRes.ok) {
         setApps((prev) =>
           prev.map((a) =>
-            a.id === editing.id
+            a.uuid === editing.uuid
               ? { ...a, company: editing.company, role: editing.role, applied_date: editing.applied_date || null }
               : a
           )
@@ -351,10 +343,6 @@ export default function ApplicationsTable({
     } finally {
       setSaving(false);
     }
-  }
-
-  function navigateToApp(id: string) {
-    router.push(`/applications/${id}`);
   }
 
   const thClass    = "text-left px-4 py-3 text-xs font-semibold text-text-muted uppercase tracking-wide select-none";
@@ -410,12 +398,12 @@ export default function ApplicationsTable({
               </tr>
             )}
             {visible.map((app, rowIdx) => {
-              const isEditing = editing?.id === app.id;
+              const isEditing = editing?.uuid === app.uuid;
               const isLast    = rowIdx === visible.length - 1;
               return (
                 <tr
-                  key={app.id}
-                  onClick={() => !isEditing && navigateToApp(app.id)}
+                  key={app.uuid}
+                  onClick={() => !isEditing && router.push(`/applications/${app.uuid}`)}
                   className={`bg-bg-elevated transition-colors ${
                     isEditing ? "" : "hover:bg-bg-surface cursor-pointer"
                   } ${app.status === "archived" ? "opacity-50" : ""}`}
@@ -457,7 +445,7 @@ export default function ApplicationsTable({
                         onClick={(e) => e.stopPropagation()}
                         onChange={(e) => setEditing((p) => p ? { ...p, role: e.target.value } : p)}
                         onKeyDown={(e) => {
-                          if (e.key === "Enter") saveEdit();
+                          if (e.key === "Enter")  saveEdit();
                           if (e.key === "Escape") cancelEdit();
                         }}
                         className="w-full px-2 py-1 text-sm border border-accent/50 rounded-md bg-white focus:outline-none focus:ring-1 focus:ring-accent"
@@ -499,7 +487,7 @@ export default function ApplicationsTable({
                         <ActionsMenu
                           app={app}
                           onEdit={startEdit}
-                          onArchive={(id) => updateStatus(id, "archived")}
+                          onArchive={(u) => updateStatus(u, "archived")}
                           onDelete={removeApp}
                         />
                       )}

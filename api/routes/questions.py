@@ -77,6 +77,10 @@ class FeedbackCreate(BaseModel):
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
 
+def _get_app_by_uuid(app_uuid: str, db: sqlite3.Connection) -> dict:
+    row = db.execute(
+        "SELECT * FROM applications WHERE uuid = ?", (app_uuid,)
+    ).fetchone()
 def _get_application_or_404(app_id: str, db: sqlite3.Connection) -> dict:
     row = db.execute("SELECT * FROM applications WHERE id = ?", (app_id,)).fetchone()
     if not row:
@@ -141,10 +145,10 @@ def _run_feedback_processor(feedback_id: int) -> None:
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
-@router.get("/{app_id}")
-def list_questions(app_id: str, db: sqlite3.Connection = Depends(get_db)):
-    """Return all questions for an application, each with their latest answer."""
-    _get_application_or_404(app_id, db)
+@router.get("/{app_uuid}")
+def list_questions(app_uuid: str, db: sqlite3.Connection = Depends(get_db)):
+    app    = _get_app_by_uuid(app_uuid, db)
+    app_id = app["id"]
 
     rows = db.execute(
         """SELECT * FROM application_questions
@@ -157,13 +161,14 @@ def list_questions(app_id: str, db: sqlite3.Connection = Depends(get_db)):
     return _enrich_questions(questions, db)
 
 
-@router.post("/{app_id}")
+@router.post("/{app_uuid}")
 def add_question(
-    app_id: str,
-    body:   QuestionCreate,
-    db:     sqlite3.Connection = Depends(get_db),
+    app_uuid: str,
+    body:     QuestionCreate,
+    db:       sqlite3.Connection = Depends(get_db),
 ):
-    _get_application_or_404(app_id, db)
+    app    = _get_app_by_uuid(app_uuid, db)
+    app_id = app["id"]
 
     if body.response_length not in VALID_LENGTHS:
         raise HTTPException(
@@ -202,28 +207,24 @@ def add_question(
     return q
 
 
-@router.patch("/{app_id}/{q_id}")
+@router.patch("/{app_uuid}/{q_id}")
 def update_question(
-    app_id: str,
-    q_id:   str,
-    body:   QuestionUpdate,
-    db:     sqlite3.Connection = Depends(get_db),
+    app_uuid: str,
+    q_id:     str,
+    body:     QuestionUpdate,
+    db:       sqlite3.Connection = Depends(get_db),
 ):
+    app    = _get_app_by_uuid(app_uuid, db)
+    app_id = app["id"]
     _get_question_or_404(q_id, app_id, db)
 
     updates = body.model_dump(exclude_none=True)
     if not updates:
-        row = db.execute(
-            "SELECT * FROM application_questions WHERE id = ?", (q_id,)
-        ).fetchone()
+        row = db.execute("SELECT * FROM application_questions WHERE id = ?", (q_id,)).fetchone()
         return row_to_dict(row)
 
     if "response_length" in updates and updates["response_length"] not in VALID_LENGTHS:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Invalid response_length: {updates['response_length']!r}",
-        )
-
+        raise HTTPException(status_code=422, detail=f"Invalid response_length: {updates['response_length']!r}")
     if "question_text" in updates and not updates["question_text"].strip():
         raise HTTPException(status_code=422, detail="question_text cannot be empty")
 
@@ -233,41 +234,35 @@ def update_question(
         list(updates.values()) + [q_id],
     )
 
-    row = db.execute(
-        "SELECT * FROM application_questions WHERE id = ?", (q_id,)
-    ).fetchone()
-    q = row_to_dict(row)
+    row    = db.execute("SELECT * FROM application_questions WHERE id = ?", (q_id,)).fetchone()
+    q      = row_to_dict(row)
     answer = _latest_answer_for_question(q_id, db)
     q["answer"]           = answer
     q["effective_answer"] = _effective_answer(answer)
     return q
 
 
-@router.delete("/{app_id}/{q_id}")
+@router.delete("/{app_uuid}/{q_id}")
 def delete_question(
-    app_id: str,
-    q_id:   str,
-    db:     sqlite3.Connection = Depends(get_db),
+    app_uuid: str,
+    q_id:     str,
+    db:       sqlite3.Connection = Depends(get_db),
 ):
+    app    = _get_app_by_uuid(app_uuid, db)
+    app_id = app["id"]
     _get_question_or_404(q_id, app_id, db)
     db.execute("DELETE FROM application_questions WHERE id = ?", (q_id,))
     return {"status": "deleted", "id": q_id}
 
 
-@router.post("/{app_id}/generate")
+@router.post("/{app_uuid}/generate")
 def generate_answers(
-    app_id: str,
-    body:   GenerateRequest,
-    db:     sqlite3.Connection = Depends(get_db),
+    app_uuid: str,
+    body:     GenerateRequest,
+    db:       sqlite3.Connection = Depends(get_db),
 ):
-    """
-    Batch-generate answers for this application's questions.
-
-    force=False: only generates for questions that don't already have an answer.
-    force=True:  regenerates all selected questions unconditionally.
-    question_ids: if provided, limits generation to those question IDs only.
-    """
-    app = _get_application_or_404(app_id, db)
+    app    = _get_app_by_uuid(app_uuid, db)
+    app_id = app["id"]
 
     rows = db.execute(
         """SELECT * FROM application_questions
@@ -322,7 +317,7 @@ def generate_answers(
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    now = datetime.now().isoformat()
+    now   = datetime.now().isoformat()
     saved: list[dict] = []
 
     for q in to_generate:
@@ -340,43 +335,34 @@ def generate_answers(
             (answer_id, q["id"], app_id, answer_text, "claude-sonnet-4-6", now),
         )
         saved.append({
-            "question_id":    q["id"],
-            "answer_id":      answer_id,
-            "ai_answer":      answer_text,
-            "user_answer":    None,
+            "question_id":      q["id"],
+            "answer_id":        answer_id,
+            "ai_answer":        answer_text,
+            "user_answer":      None,
             "effective_answer": answer_text,
         })
 
-    return {
-        "generated": len(saved),
-        "skipped":   skipped,
-        "answers":   saved,
-    }
+    return {"generated": len(saved), "skipped": skipped, "answers": saved}
 
 
-@router.post("/{app_id}/{q_id}/regenerate")
+@router.post("/{app_uuid}/{q_id}/regenerate")
 def regenerate_answer(
-    app_id: str,
-    q_id:   str,
-    db:     sqlite3.Connection = Depends(get_db),
+    app_uuid: str,
+    q_id:     str,
+    db:       sqlite3.Connection = Depends(get_db),
 ):
-    """Regenerate the answer for a single question, ignoring any existing answer."""
-    app = _get_application_or_404(app_id, db)
-    q   = _get_question_or_404(q_id, app_id, db)
-
-    jd_text     = app.get("jd_text") or ""
-    cv_markdown = app.get("cv_markdown") or ""
-    notes       = app.get("notes")
-    qa_tone     = app.get("qa_tone") or "professional"
+    app    = _get_app_by_uuid(app_uuid, db)
+    app_id = app["id"]
+    q      = _get_question_or_404(q_id, app_id, db)
 
     from pipeline.question_answerer import generate_answers as _generate
 
     try:
         answers_map = _generate(
-            jd_text=jd_text,
-            cv_markdown=cv_markdown,
-            notes=notes,
-            qa_tone=qa_tone,
+            jd_text=app.get("jd_text") or "",
+            cv_markdown=app.get("cv_markdown") or "",
+            notes=app.get("notes"),
+            qa_tone=app.get("qa_tone") or "professional",
             questions=[q],
         )
     except RuntimeError as e:
@@ -405,14 +391,15 @@ def regenerate_answer(
     }
 
 
-@router.patch("/{app_id}/{q_id}/answer")
+@router.patch("/{app_uuid}/{q_id}/answer")
 def update_answer(
-    app_id: str,
-    q_id:   str,
-    body:   AnswerUpdate,
-    db:     sqlite3.Connection = Depends(get_db),
+    app_uuid: str,
+    q_id:     str,
+    body:     AnswerUpdate,
+    db:       sqlite3.Connection = Depends(get_db),
 ):
-    """Save a user-edited answer. Updates the most recent answer row."""
+    app    = _get_app_by_uuid(app_uuid, db)
+    app_id = app["id"]
     _get_question_or_404(q_id, app_id, db)
 
     answer = _latest_answer_for_question(q_id, db)
@@ -435,14 +422,16 @@ def update_answer(
     }
 
 
-@router.post("/{app_id}/{q_id}/feedback")
+@router.post("/{app_uuid}/{q_id}/feedback")
 def submit_feedback(
-    app_id:           str,
+    app_uuid:         str,
     q_id:             str,
     body:             FeedbackCreate,
     background_tasks: BackgroundTasks,
     db:               sqlite3.Connection = Depends(get_db),
 ):
+    app    = _get_app_by_uuid(app_uuid, db)
+    app_id = app["id"]
     """
     Record thumbs-up/down feedback on the latest answer for this question.
     Returns immediately; Haiku distillation runs as a background task.
