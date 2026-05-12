@@ -39,6 +39,7 @@ class ApplicationUpdate(BaseModel):
     salary_min:       Optional[int]   = None
     salary_max:       Optional[int]   = None
     salary_currency:  Optional[str]   = None
+    qa_tone:          Optional[str]   = None
 
 
 class DateCreate(BaseModel):
@@ -69,6 +70,7 @@ VALID_STATUSES = {
 }
 VALID_TIERS        = {"T1", "T2", "T3", "EX1"}
 VALID_ARRANGEMENTS = {"remote", "hybrid", "office"}
+VALID_QA_TONES     = {"professional", "direct", "conversational", "technical"}
 
 # Statuses eligible for auto-ghosting — active but waiting on employer response
 _GHOSTABLE_STATUSES = ("applied", "acknowledged", "interviewing", "case_study")
@@ -333,6 +335,8 @@ def update_application(
         raise HTTPException(status_code=422, detail=f"Invalid tier: {updates['tier']}")
     if "work_arrangement" in updates and updates["work_arrangement"] not in VALID_ARRANGEMENTS:
         raise HTTPException(status_code=422, detail=f"Invalid work_arrangement: {updates['work_arrangement']}")
+    if "qa_tone" in updates and updates["qa_tone"] not in VALID_QA_TONES:
+        raise HTTPException(status_code=422, detail=f"Invalid qa_tone: {updates['qa_tone']}. Must be one of: {sorted(VALID_QA_TONES)}")
 
     set_clause = ", ".join(f"{k} = ?" for k in updates)
     db.execute(f"UPDATE applications SET {set_clause} WHERE id = ?", list(updates.values()) + [app_id])
