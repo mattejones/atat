@@ -12,6 +12,7 @@ cv.md is composed from section content via compose_cv_markdown().
 """
 
 import json
+import re
 import sqlite3
 import uuid
 from datetime import date, datetime
@@ -51,10 +52,21 @@ class GenerateRequest(BaseModel):
 
 
 class GenerateResponse(BaseModel):
-    app_id:        str
+    uuid:          str
+    app_id:        str   # retained for backwards compatibility; prefer uuid for routing
     cv_markdown:   str
     has_reasoning: bool = False
     status:        str  = "generated"
+
+
+def _slugify(text: str, max_len: int) -> str:
+    """
+    Convert arbitrary text to a URL-safe slug.
+    Replaces any sequence of non-alphanumeric characters with a single hyphen.
+    This catches spaces, slashes, ampersands, parentheses, and anything else
+    that would break URL routing or filesystem paths.
+    """
+    return re.sub(r'[^a-z0-9]+', '-', text.lower())[:max_len].strip('-')
 
 
 @router.post("", response_model=GenerateResponse)
@@ -66,9 +78,10 @@ def generate_cv(
         raise HTTPException(status_code=400, detail="JD text cannot be empty")
 
     today        = date.today().isoformat()
-    company_slug = request.company.lower().replace(" ", "-")[:30]
-    role_slug    = request.role.lower().replace(" ", "-")[:40]
+    company_slug = _slugify(request.company, 30)
+    role_slug    = _slugify(request.role, 40)
     app_id       = f"{today}_{company_slug}_{role_slug}"
+    app_uuid     = str(uuid.uuid4())
 
     out_dir = OUTPUT_PATH / app_id
     if out_dir.exists() or db.execute(
@@ -99,7 +112,6 @@ def generate_cv(
     except ValueError as e:
         raise HTTPException(status_code=500, detail=f"Section splitting failed: {e}")
 
-    # ── Compose full cv.md from section content ───────────────────────────────
     cv_markdown = compose_cv_markdown(name, contact, section_content)
 
     (out_dir / "cv.md").write_text(cv_markdown, encoding="utf-8")
@@ -122,15 +134,15 @@ def generate_cv(
 
     now = datetime.now().isoformat()
 
-    # ── Insert application row first (sections FK depends on this) ────────────
+    # ── Insert application row ────────────────────────────────────────────────
     db.execute(
         """INSERT INTO applications
-           (id, company, role, source_url, jd_text, cv_markdown,
+           (id, uuid, company, role, source_url, jd_text, cv_markdown,
             tier, status, output_dir, has_pdf, model, provider,
             generation_notes, reasoning, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'generated', ?, 0, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'generated', ?, 0, ?, ?, ?, ?, ?, ?)""",
         (
-            app_id, request.company, request.role, request.source_url,
+            app_id, app_uuid, request.company, request.role, request.source_url,
             request.jd_text, cv_markdown, request.tier,
             str(out_dir), LLM_MODEL, LLM_PROVIDER,
             request.generation_notes, reasoning or None, now, now,
@@ -160,7 +172,6 @@ def generate_cv(
                VALUES (?, ?, ?, NULL, ?, ?)""",
             (section_id, app_id, section_name, now, now),
         )
-
         db.execute(
             """INSERT INTO reports
                (id, application_id, section_id, parent_report_id,
@@ -179,6 +190,7 @@ def generate_cv(
             logging.getLogger(__name__).error(f"PDF rendering failed: {e}")
 
     return GenerateResponse(
+        uuid=app_uuid,
         app_id=app_id,
         cv_markdown=cv_markdown,
         has_reasoning=bool(reasoning),
