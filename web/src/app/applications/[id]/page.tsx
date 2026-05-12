@@ -8,10 +8,11 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { STATUS_LABELS, STATUS_FLOW, STATUS_STYLES } from "@/lib/statuses";
+import QuestionsPanel from "@/components/QuestionsPanel";
 
 const API = process.env.NEXT_PUBLIC_API_URL;
 
-type ViewMode = "preview" | "raw" | "reasoning" | "jd" | "history";
+type ViewMode = "preview" | "raw" | "reasoning" | "jd" | "history" | "questions";
 
 const ARRANGEMENT_LABELS: Record<string, string> = {
   remote: "Remote",
@@ -404,14 +405,11 @@ function HistoryPanel({ appId }: { appId: string }) {
         <p className="text-sm text-text-muted">No history recorded yet.</p>
       )}
       {!loading && events.length > 0 && (
-        // Flex-based timeline — avoids fragile absolute positioning against ol border-l.
-        // Vertical line is an explicit div positioned at the horizontal centre of the dot.
         <div className="relative">
           <div className="absolute left-[5px] top-2 bottom-2 w-px bg-bg-border" />
           <div className="space-y-4">
             {events.map((event) => (
               <div key={event.id} className="relative flex items-start gap-4">
-                {/* Dot — 11px wide, centre at 5.5px, aligns with the line at left: 5px */}
                 <div className="relative z-10 flex-shrink-0 mt-[3px] w-[11px] h-[11px] rounded-full border-2 border-accent/50 bg-bg-elevated" />
                 <div className="min-w-0 pb-1">
                   <p className="text-xs font-medium text-text-primary leading-snug">
@@ -570,6 +568,10 @@ export default function ApplicationPage() {
     if (res.ok) setMeta(await res.json());
   }
 
+  function handleToneChange(tone: string) {
+    setMeta((m: any) => m ? { ...m, qa_tone: tone } : m);
+  }
+
   const hasJd = !!meta?.jd_text;
 
   const views: ViewMode[] = [
@@ -578,6 +580,7 @@ export default function ApplicationPage() {
     ...(hasJd ? (["jd"] as ViewMode[]) : []),
     "reasoning",
     "history",
+    "questions",
   ];
 
   const VIEW_LABELS: Record<ViewMode, string> = {
@@ -586,6 +589,7 @@ export default function ApplicationPage() {
     jd:        "Job Description",
     reasoning: "🧠 Reasoning",
     history:   "History",
+    questions: "Questions",
   };
 
   return (
@@ -602,7 +606,6 @@ export default function ApplicationPage() {
             {meta?.company || "Application"}
             {meta?.role && <span className="font-normal text-text-secondary ml-2">— {meta.role}</span>}
           </h1>
-          {/* Status control — lives directly under the title */}
           {meta && (
             <div className="mt-2">
               <InlineStatusDropdown
@@ -670,7 +673,7 @@ export default function ApplicationPage() {
       </div>
 
       {/* Content area */}
-      <div className="rounded-xl border border-bg-border overflow-hidden">
+      <div className={`rounded-xl border border-bg-border overflow-hidden ${view === "questions" ? "" : ""}`}>
         {view === "preview" && (
           <div className="bg-bg-elevated p-8 prose-cv max-w-none min-h-[60vh]">
             <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
@@ -685,9 +688,18 @@ export default function ApplicationPage() {
             spellCheck={false}
           />
         )}
-        {view === "jd" && <JdPanel jdText={meta?.jd_text ?? ""} />}
+        {view === "jd"        && <JdPanel jdText={meta?.jd_text ?? ""} />}
         {view === "reasoning" && <ReasoningPanel content={reasoning} hasReasoning={hasReasoning} />}
-        {view === "history" && <HistoryPanel appId={id} />}
+        {view === "history"   && <HistoryPanel appId={id} />}
+        {view === "questions" && meta && (
+          <div className="bg-bg-elevated p-6">
+            <QuestionsPanel
+              appId={id}
+              initialTone={meta.qa_tone ?? "professional"}
+              onToneChange={handleToneChange}
+            />
+          </div>
+        )}
       </div>
     </div>
   );
