@@ -27,6 +27,7 @@ interface Question {
   created_at:       string;
   answer:           Answer | null;
   effective_answer: string | null;
+  isDraft?:         boolean;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -305,18 +306,28 @@ function QuestionRow({
   onUpdate,
   onDelete,
   onRegenerate,
+  isDraft,
+  onPersist,
 }: {
   appId:        string;
   question:     Question;
   onUpdate:     (q: Question) => void;
   onDelete:     (id: string) => void;
   onRegenerate: (q: Question) => void;
+  isDraft?:     boolean;
+  onPersist?:   (tempId: string, persisted: Question) => void;
 }) {
-  const [text, setText]           = useState(question.question_text);
-  const [textSaved, setTextSaved] = useState(true);
-  const saveTimer                 = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [text, setText]               = useState(question.question_text);
+  const [textSaved, setTextSaved]     = useState(true);
+  const [draftLength, setDraftLength] = useState<ResponseLength>(question.response_length);
+  const [draftResearch, setDraftResearch] = useState<number>(question.needs_research);
+  const saveTimer                     = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const effectiveLength   = isDraft ? draftLength   : question.response_length;
+  const effectiveResearch = isDraft ? draftResearch : question.needs_research;
 
   async function patchQuestion(patch: Partial<Question>) {
+    if (isDraft) return;
     const res = await fetch(`${API}/questions/${appId}/${question.id}`, {
       method:  "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -331,6 +342,7 @@ function QuestionRow({
   function handleTextChange(val: string) {
     setText(val);
     setTextSaved(false);
+    if (isDraft) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
       await patchQuestion({ question_text: val } as any);
@@ -338,9 +350,47 @@ function QuestionRow({
     }, 800);
   }
 
+  async function handleTextBlur() {
+    if (!isDraft || !text.trim()) return;
+    const res = await fetch(`${API}/questions/${appId}`, {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify({
+        question_text:   text.trim(),
+        response_length: draftLength,
+        needs_research:  draftResearch,
+        sort_order:      question.sort_order,
+      }),
+    });
+    if (res.ok) {
+      const persisted = await res.json();
+      onPersist?.(question.id, { ...persisted, answer: null, effective_answer: null });
+    }
+  }
+
   async function handleDelete() {
+    if (isDraft) {
+      onDelete(question.id);
+      return;
+    }
     await fetch(`${API}/questions/${appId}/${question.id}`, { method: "DELETE" });
     onDelete(question.id);
+  }
+
+  function handleLengthChange(val: ResponseLength) {
+    if (isDraft) {
+      setDraftLength(val);
+    } else {
+      patchQuestion({ response_length: val } as any);
+    }
+  }
+
+  function handleResearchChange(checked: boolean) {
+    if (isDraft) {
+      setDraftResearch(checked ? 1 : 0);
+    } else {
+      patchQuestion({ needs_research: checked ? 1 : 0 } as any);
+    }
   }
 
   return (
@@ -350,8 +400,11 @@ function QuestionRow({
         <textarea
           value={text}
           onChange={(e) => handleTextChange(e.target.value)}
+          onBlur={handleTextBlur}
           placeholder="Enter application question…"
           rows={2}
+          // eslint-disable-next-line jsx-a11y/no-autofocus
+          autoFocus={isDraft}
           className="flex-1 px-3 py-2 text-sm text-text-primary bg-bg-elevated border border-bg-border rounded-lg resize-y focus:outline-none focus:ring-2 focus:ring-accent/40 placeholder-text-muted leading-relaxed"
         />
         <button
@@ -371,10 +424,10 @@ function QuestionRow({
           {LENGTH_OPTIONS.map((opt) => (
             <button
               key={opt.value}
-              onClick={() => patchQuestion({ response_length: opt.value } as any)}
+              onClick={() => handleLengthChange(opt.value)}
               title={opt.hint}
               className={`px-2.5 py-0.5 text-xs rounded-full border transition-colors ${
-                question.response_length === opt.value
+                effectiveLength === opt.value
                   ? "bg-accent text-white border-accent"
                   : "border-bg-border text-text-secondary hover:border-accent/50"
               }`}
@@ -388,17 +441,18 @@ function QuestionRow({
         <label className="flex items-center gap-1.5 cursor-pointer select-none">
           <input
             type="checkbox"
-            checked={!!question.needs_research}
-            onChange={(e) =>
-              patchQuestion({ needs_research: e.target.checked ? 1 : 0 } as any)
-            }
+            checked={!!effectiveResearch}
+            onChange={(e) => handleResearchChange(e.target.checked)}
             className="w-3.5 h-3.5 rounded border-bg-border accent-accent"
           />
           <span className="text-xs text-text-secondary">Needs research</span>
         </label>
 
-        {!textSaved && (
+        {!isDraft && !textSaved && (
           <span className="text-[10px] text-text-muted ml-auto">Saving…</span>
+        )}
+        {isDraft && (
+          <span className="text-[10px] text-text-muted ml-auto italic">Unsaved — blur to save</span>
         )}
       </div>
 
@@ -444,22 +498,22 @@ export default function QuestionsPanel({
     }
   }
 
-  async function addQuestion() {
+  function addQuestion() {
+    const tempId    = `draft-${crypto.randomUUID()}`;
     const nextOrder = questions.length;
-    const res = await fetch(`${API}/questions/${appId}`, {
-      method:  "POST",
-      headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify({
-        question_text:   "",
-        response_length: "short",
-        needs_research:  0,
-        sort_order:      nextOrder,
-      }),
-    });
-    if (res.ok) {
-      const q = await res.json();
-      setQuestions((prev) => [...prev, q]);
-    }
+    const draft: Question = {
+      id:               tempId,
+      application_id:   appId,
+      question_text:    "",
+      response_length:  "short",
+      needs_research:   0,
+      sort_order:       nextOrder,
+      created_at:       new Date().toISOString(),
+      answer:           null,
+      effective_answer: null,
+      isDraft:          true,
+    };
+    setQuestions((prev) => [...prev, draft]);
   }
 
   async function generateAnswers() {
@@ -492,6 +546,12 @@ export default function QuestionsPanel({
   function handleQuestionUpdate(updated: Question) {
     setQuestions((prev) =>
       prev.map((q) => (q.id === updated.id ? updated : q))
+    );
+  }
+
+  function handlePersist(tempId: string, persisted: Question) {
+    setQuestions((prev) =>
+      prev.map((q) => (q.id === tempId ? persisted : q))
     );
   }
 
@@ -535,6 +595,8 @@ export default function QuestionsPanel({
               onUpdate={handleQuestionUpdate}
               onDelete={handleQuestionDelete}
               onRegenerate={handleRegenerate}
+              isDraft={q.isDraft}
+              onPersist={handlePersist}
             />
           ))}
         </div>

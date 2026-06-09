@@ -6,14 +6,14 @@ Questions and answers are stored per-application; tone is read from
 the application's qa_tone field.
 
 Endpoints:
-  GET    /questions/{app_id}                   — list questions with latest answers
-  POST   /questions/{app_id}                   — add a question
-  PATCH  /questions/{app_id}/{q_id}            — update question (text/length/research/order)
-  DELETE /questions/{app_id}/{q_id}            — remove a question
-  POST   /questions/{app_id}/generate          — batch-generate answers
-  POST   /questions/{app_id}/{q_id}/regenerate — regenerate a single answer
-  PATCH  /questions/{app_id}/{q_id}/answer     — save user-edited answer text
-  POST   /questions/{app_id}/{q_id}/feedback   — submit feedback (async processing)
+  GET    /questions/{app_uuid}                   — list questions with latest answers
+  POST   /questions/{app_uuid}                   — add a question
+  PATCH  /questions/{app_uuid}/{q_id}            — update question (text/length/research/order)
+  DELETE /questions/{app_uuid}/{q_id}            — remove a question
+  POST   /questions/{app_uuid}/generate          — batch-generate answers
+  POST   /questions/{app_uuid}/{q_id}/regenerate — regenerate a single answer
+  PATCH  /questions/{app_uuid}/{q_id}/answer     — save user-edited answer text
+  POST   /questions/{app_uuid}/{q_id}/feedback   — submit feedback (async processing)
 
 Generation:
   force=False (default) — only generates answers for questions that have none.
@@ -42,7 +42,7 @@ router = APIRouter(prefix="/questions", tags=["questions"])
 
 VALID_LENGTHS   = {"short", "paragraph"}
 VALID_RATINGS   = {"positive", "negative"}
-MAX_QUESTIONS   = 20  # soft ceiling — enforced at creation time with a warning
+MAX_QUESTIONS   = 20
 
 
 # ── Pydantic models ───────────────────────────────────────────────────────────
@@ -66,7 +66,7 @@ class AnswerUpdate(BaseModel):
 
 
 class GenerateRequest(BaseModel):
-    force:        bool            = False
+    force:        bool                = False
     question_ids: Optional[list[str]] = None
 
 
@@ -81,8 +81,6 @@ def _get_app_by_uuid(app_uuid: str, db: sqlite3.Connection) -> dict:
     row = db.execute(
         "SELECT * FROM applications WHERE uuid = ?", (app_uuid,)
     ).fetchone()
-def _get_application_or_404(app_id: str, db: sqlite3.Connection) -> dict:
-    row = db.execute("SELECT * FROM applications WHERE id = ?", (app_id,)).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Application not found")
     return row_to_dict(row)
@@ -99,7 +97,6 @@ def _get_question_or_404(q_id: str, app_id: str, db: sqlite3.Connection) -> dict
 
 
 def _latest_answer_for_question(q_id: str, db: sqlite3.Connection) -> Optional[dict]:
-    """Return the most recently created answer for a question, or None."""
     row = db.execute(
         """SELECT * FROM application_answers
            WHERE question_id = ?
@@ -111,14 +108,12 @@ def _latest_answer_for_question(q_id: str, db: sqlite3.Connection) -> Optional[d
 
 
 def _effective_answer(answer: Optional[dict]) -> Optional[str]:
-    """Return the user-edited answer if present, otherwise the AI answer."""
     if not answer:
         return None
     return answer.get("user_answer") or answer.get("ai_answer")
 
 
 def _enrich_questions(questions: list[dict], db: sqlite3.Connection) -> list[dict]:
-    """Attach the latest answer to each question dict."""
     for q in questions:
         answer = _latest_answer_for_question(q["id"], db)
         q["answer"]           = answer
@@ -129,10 +124,6 @@ def _enrich_questions(questions: list[dict], db: sqlite3.Connection) -> list[dic
 # ── Background task ───────────────────────────────────────────────────────────
 
 def _run_feedback_processor(feedback_id: int) -> None:
-    """
-    Background task: distil feedback into a prompt signal via Haiku.
-    Opens its own DB connection — safe to run after the request closes.
-    """
     try:
         from db.database import get_connection
         from pipeline.feedback_processor import process_feedback
@@ -179,7 +170,6 @@ def add_question(
     if not body.question_text.strip():
         raise HTTPException(status_code=422, detail="question_text cannot be empty")
 
-    # Soft ceiling check
     count = db.execute(
         "SELECT COUNT(*) FROM application_questions WHERE application_id = ?",
         (app_id,),
@@ -220,7 +210,9 @@ def update_question(
 
     updates = body.model_dump(exclude_none=True)
     if not updates:
-        row = db.execute("SELECT * FROM application_questions WHERE id = ?", (q_id,)).fetchone()
+        row = db.execute(
+            "SELECT * FROM application_questions WHERE id = ?", (q_id,)
+        ).fetchone()
         return row_to_dict(row)
 
     if "response_length" in updates and updates["response_length"] not in VALID_LENGTHS:
@@ -234,7 +226,9 @@ def update_question(
         list(updates.values()) + [q_id],
     )
 
-    row    = db.execute("SELECT * FROM application_questions WHERE id = ?", (q_id,)).fetchone()
+    row    = db.execute(
+        "SELECT * FROM application_questions WHERE id = ?", (q_id,)
+    ).fetchone()
     q      = row_to_dict(row)
     answer = _latest_answer_for_question(q_id, db)
     q["answer"]           = answer
@@ -275,12 +269,10 @@ def generate_answers(
     if not all_questions:
         return {"generated": 0, "skipped": 0, "answers": []}
 
-    # Filter to requested question_ids if provided
     if body.question_ids:
         id_set        = set(body.question_ids)
         all_questions = [q for q in all_questions if q["id"] in id_set]
 
-    # Unless force=True, skip questions that already have an answer
     to_generate: list[dict] = []
     skipped = 0
     for q in all_questions:
@@ -292,7 +284,6 @@ def generate_answers(
     if not to_generate:
         return {"generated": 0, "skipped": skipped, "answers": []}
 
-    # Load generation context from application
     jd_text     = app.get("jd_text") or ""
     cv_markdown = app.get("cv_markdown") or ""
     notes       = app.get("notes")
@@ -430,12 +421,9 @@ def submit_feedback(
     background_tasks: BackgroundTasks,
     db:               sqlite3.Connection = Depends(get_db),
 ):
+    """Record thumbs-up/down feedback. Returns immediately; Haiku distillation runs as a background task."""
     app    = _get_app_by_uuid(app_uuid, db)
     app_id = app["id"]
-    """
-    Record thumbs-up/down feedback on the latest answer for this question.
-    Returns immediately; Haiku distillation runs as a background task.
-    """
     _get_question_or_404(q_id, app_id, db)
 
     if body.rating not in VALID_RATINGS:
@@ -451,7 +439,7 @@ def submit_feedback(
             detail="No answer exists for this question — generate one before submitting feedback.",
         )
 
-    now = datetime.now().isoformat()
+    now    = datetime.now().isoformat()
     cursor = db.execute(
         """INSERT INTO answer_feedback
            (answer_id, rating, user_comment, processed, created_at)
@@ -461,5 +449,4 @@ def submit_feedback(
     feedback_id = cursor.lastrowid
 
     background_tasks.add_task(_run_feedback_processor, feedback_id)
-
     return {"status": "received", "feedback_id": feedback_id}
