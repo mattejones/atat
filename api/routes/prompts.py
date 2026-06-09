@@ -50,6 +50,13 @@ _REGISTRY: list[dict] = [
         "system":      False,
     },
     {
+        "slug":        "question_answering",
+        "label":       "Question Answering",
+        "description": "System prompt for answering job application questions. Controls answer structure, length calibration, and use of CV/JD context. Tone is injected at call time from the application's tone setting.",
+        "personal":    False,
+        "system":      True,
+    },
+    {
         "slug":        "judge_accuracy",
         "label":       "Judge — Accuracy",
         "description": "System prompt for the Tier 2 LLM accuracy judge. Defines what counts as an unsupported claim and the expected response schema.",
@@ -107,6 +114,7 @@ _REGISTRY_BY_SLUG = {p["slug"]: p for p in _REGISTRY}
 _SIGNAL_SOURCES: dict[str, list[str]] = {
     "cv_generation":                  ["application_notes", "common_flags"],
     "personal_additions":             ["application_notes", "common_flags"],
+    "question_answering":             ["qa_feedback_signals"],
     "judge_accuracy":                 ["flag_patterns"],
     "retry_system":                   ["retry_comments", "actioned_flags"],
     "retry_sections/profile":         ["actioned_flags_by_section", "retry_comments_by_section"],
@@ -308,6 +316,44 @@ def _fetch_retry_comments_by_section(db: sqlite3.Connection, section_name: str) 
     ]
 
 
+def _fetch_qa_feedback_signals(db: sqlite3.Connection) -> list[dict]:
+    """
+    Surface processed feedback signals from answer_feedback.
+    These are Haiku-distilled insights from thumbs-up/down feedback
+    on question answers.
+    """
+    rows = db.execute(
+        """
+        SELECT
+            af.processed_signal,
+            af.rating,
+            aq.question_text,
+            a.company,
+            a.role
+        FROM answer_feedback af
+        JOIN application_answers   aa ON af.answer_id    = aa.id
+        JOIN application_questions aq ON aa.question_id  = aq.id
+        JOIN applications          a  ON aq.application_id = a.id
+        WHERE af.processed = 1
+          AND af.processed_signal IS NOT NULL
+          AND trim(af.processed_signal) != ''
+        ORDER BY af.created_at DESC
+        LIMIT 15
+        """
+    ).fetchall()
+
+    results = []
+    for row in rows:
+        sentiment = "positive feedback" if row["rating"] == "positive" else "negative feedback"
+        results.append({
+            "text":    row["processed_signal"],
+            "source":  f"answer feedback · {sentiment}",
+            "context": f"{row['company']} — {row['role']}",
+            "count":   1,
+        })
+    return results
+
+
 _FETCHERS = {
     "application_notes":          lambda db, _: _fetch_application_notes(db),
     "common_flags":               lambda db, _: _fetch_common_flags(db),
@@ -316,6 +362,7 @@ _FETCHERS = {
     "retry_comments":             lambda db, _: _fetch_retry_comments(db),
     "actioned_flags_by_section":  lambda db, s: _fetch_actioned_flags_by_section(db, s or ""),
     "retry_comments_by_section":  lambda db, s: _fetch_retry_comments_by_section(db, s or ""),
+    "qa_feedback_signals":        lambda db, _: _fetch_qa_feedback_signals(db),
 }
 
 

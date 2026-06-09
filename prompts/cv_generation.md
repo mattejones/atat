@@ -39,7 +39,7 @@ The JSON must follow this exact schema:
     {
       "degree": "Degree Title",
       "institution": "University Name",
-      "years": "YYYY–YYYY",
+      "years": "YYYY – YYYY",
       "subjects": "Optional subject line"
     }
   ],
@@ -276,5 +276,6 @@ If a PERSONAL ADDITIONS section is provided in the user message, apply those ins
 - Every claim is specific, credible, and sourced from the library
 - No unexplained acronym, no bullet leading with a problem
 - Shorter, honest, targeted — always better than longer, padded, keyword-stuffed
+- hyphens between dates (duration of employmemt, or courses)
 
 Remember: your entire response must be a single valid JSON object starting with `{` and ending with `}`.
