@@ -15,6 +15,7 @@ data/
 
 # Personal prompt additions - never commit
 prompts/personal_additions.md
+prompts/cover_letter_personal.md
 
 # Fonts - downloaded locally, not committed
 fonts/

@@ -98,6 +98,27 @@ _REGISTRY: list[dict] = [
         "personal":    False,
         "system":      True,
     },
+    {
+        "slug":        "cover_letter_research",
+        "label":       "Cover Letter — Research",
+        "description": "System prompt for the cover letter research phase. Controls what the model searches for and how it structures the research brief.",
+        "personal":    False,
+        "system":      False,
+    },
+    {
+        "slug":        "cover_letter_system",
+        "label":       "Cover Letter — Generation",
+        "description": "System prompt for cover letter generation. Controls tone, structure, length, and what context to prioritise.",
+        "personal":    False,
+        "system":      False,
+    },
+    {
+        "slug":        "cover_letter_personal",
+        "label":       "Cover Letter — Personal",
+        "description": "Personal additions appended to the cover letter generation prompt. Gitignored — not committed to the repo.",
+        "personal":    True,
+        "system":      False,
+    },
 ]
 
 _REGISTRY_BY_SLUG = {p["slug"]: p for p in _REGISTRY}
@@ -114,6 +135,9 @@ _SIGNAL_SOURCES: dict[str, list[str]] = {
     "retry_sections/skills":          ["actioned_flags_by_section", "retry_comments_by_section"],
     "retry_sections/education":       ["actioned_flags_by_section", "retry_comments_by_section"],
     "retry_sections/certifications":  ["actioned_flags_by_section", "retry_comments_by_section"],
+    "cover_letter_research":           [],
+    "cover_letter_system":             [],
+    "cover_letter_personal":           [],
 }
 
 

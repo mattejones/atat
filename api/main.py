@@ -4,8 +4,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.routes.applications import router as applications_router
+from api.routes.cover_letter import router as cover_letter_router
 from api.routes.generate import router as generate_router
 from api.routes.prompts import router as prompts_router
+from api.routes.questions import router as questions_router
 from api.routes.render import router as render_router
 from api.routes.review import router as review_router
 from api.routes.scrape import router as scrape_router
@@ -74,8 +76,10 @@ def create_app() -> FastAPI:
             log.info("Auto-ghost scheduler stopped")
 
     app.include_router(applications_router)
+    app.include_router(cover_letter_router)
     app.include_router(generate_router)
     app.include_router(prompts_router)
+    app.include_router(questions_router)
     app.include_router(render_router)
     app.include_router(review_router)
     app.include_router(scrape_router)

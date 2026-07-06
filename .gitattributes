@@ -1,0 +1,27 @@
+# Enforce LF line endings for all text files regardless of OS
+* text=auto eol=lf
+
+# Explicit overrides for key file types
+*.py    text eol=lf
+*.ts    text eol=lf
+*.tsx   text eol=lf
+*.js    text eol=lf
+*.jsx   text eol=lf
+*.md    text eol=lf
+*.sql   text eol=lf
+*.sh    text eol=lf
+*.json  text eol=lf
+*.yaml  text eol=lf
+*.yml   text eol=lf
+*.toml  text eol=lf
+*.txt   text eol=lf
+*.env   text eol=lf
+
+# Binaries — never touch
+*.pdf   binary
+*.ttf   binary
+*.woff  binary
+*.woff2 binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary

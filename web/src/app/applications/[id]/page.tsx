@@ -8,10 +8,11 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { STATUS_LABELS, STATUS_FLOW, STATUS_STYLES } from "@/lib/statuses";
+import CoverLetterPanel from "@/components/CoverLetterPanel";
 
 const API = process.env.NEXT_PUBLIC_API_URL;
 
-type ViewMode = "preview" | "raw" | "reasoning" | "jd" | "history";
+type ViewMode = "preview" | "raw" | "reasoning" | "jd" | "history" | "cover_letter";
 
 const ARRANGEMENT_LABELS: Record<string, string> = {
   remote: "Remote",
@@ -578,14 +579,16 @@ export default function ApplicationPage() {
     ...(hasJd ? (["jd"] as ViewMode[]) : []),
     "reasoning",
     "history",
+    "cover_letter",
   ];
 
   const VIEW_LABELS: Record<ViewMode, string> = {
-    preview:   "Preview",
-    raw:       "Raw",
-    jd:        "Job Description",
-    reasoning: "🧠 Reasoning",
-    history:   "History",
+    preview:      "Preview",
+    raw:          "Raw",
+    jd:           "Job Description",
+    reasoning:    "🧠 Reasoning",
+    history:      "History",
+    cover_letter: "Cover Letter",
   };
 
   return (
@@ -669,26 +672,31 @@ export default function ApplicationPage() {
         ))}
       </div>
 
-      {/* Content area */}
-      <div className="rounded-xl border border-bg-border overflow-hidden">
-        {view === "preview" && (
-          <div className="bg-bg-elevated p-8 prose-cv max-w-none min-h-[60vh]">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
-          </div>
-        )}
-        {view === "raw" && (
-          <textarea
-            value={edited}
-            onChange={(e) => { setEdited(e.target.value); setDirty(e.target.value !== content); }}
-            onBlur={() => { if (dirty) handleSave(); }}
-            className="w-full h-[70vh] p-6 font-mono text-xs text-text-primary bg-bg-elevated resize-none focus:outline-none leading-relaxed"
-            spellCheck={false}
-          />
-        )}
-        {view === "jd" && <JdPanel jdText={meta?.jd_text ?? ""} />}
-        {view === "reasoning" && <ReasoningPanel content={reasoning} hasReasoning={hasReasoning} />}
-        {view === "history" && <HistoryPanel appId={id} />}
-      </div>
+      {/* Content area — document views share a bordered container;
+           panel views manage their own layout */}
+      {(["preview", "raw", "jd", "reasoning", "history"] as ViewMode[]).includes(view) && (
+        <div className="rounded-xl border border-bg-border overflow-hidden">
+          {view === "preview" && (
+            <div className="bg-bg-elevated p-8 prose-cv max-w-none min-h-[60vh]">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+            </div>
+          )}
+          {view === "raw" && (
+            <textarea
+              value={edited}
+              onChange={(e) => { setEdited(e.target.value); setDirty(e.target.value !== content); }}
+              onBlur={() => { if (dirty) handleSave(); }}
+              className="w-full h-[70vh] p-6 font-mono text-xs text-text-primary bg-bg-elevated resize-none focus:outline-none leading-relaxed"
+              spellCheck={false}
+            />
+          )}
+          {view === "jd"        && <JdPanel jdText={meta?.jd_text ?? ""} />}
+          {view === "reasoning" && <ReasoningPanel content={reasoning} hasReasoning={hasReasoning} />}
+          {view === "history"   && <HistoryPanel appId={id} />}
+        </div>
+      )}
+
+      {view === "cover_letter" && <CoverLetterPanel appId={id} />}
     </div>
   );
 }
