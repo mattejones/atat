@@ -212,7 +212,8 @@ def _render_cert(cert: str) -> str:
     c = esc(cert)
     return (
         f'#grid(columns:(14pt,1fr),align:(center+top,left+top),'
-        f'[#v(4pt)#circle(radius:2pt,fill:rgb("{P["dot"]}"))],\n'
+        f'[#text(size:9pt)[#box(width:14pt,height:1em)'
+        f'[#align(center+horizon)[#circle(radius:2pt,fill:rgb("{P["dot"]}"))]]]],\n'
         f'[#par(leading:6pt)[#text(font:"Poppins",size:9pt,weight:"regular",'
         f'fill:rgb("{P["body"]}"))[{c}]]])\n'
         f'#v(5pt)'

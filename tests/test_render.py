@@ -1,8 +1,8 @@
 """
 Tests for pipeline/render.py — Typst document generation.
 
-Covers the experience-bullet marker specifically: a previous implementation
-used a hardcoded `#v(3pt)` nudge to position the bullet circle, which was
+Covers the experience-bullet and certification-bullet markers: a previous
+implementation used a hardcoded `#v()` nudge to position each bullet circle,
 tuned for one font-size/leading combination and drifted out of alignment
 whenever those values changed (visible as a bullet floating above the
 text line instead of sitting centered on it).
@@ -45,7 +45,7 @@ def _sample_cv(bullets: list[str]) -> ParsedCV:
     )
 
 
-def test_bullet_marker_centers_on_font_metrics_not_a_hardcoded_offset():
+def test_experience_bullet_marker_centers_on_font_metrics_not_a_hardcoded_offset():
     """
     The marker must derive its vertical position from the bullet text's own
     font size (via a 1em box + horizon alignment), not from a fixed-point
@@ -58,6 +58,19 @@ def test_bullet_marker_centers_on_font_metrics_not_a_hardcoded_offset():
     assert "align(center+horizon)" in doc
     # Guard against regressing to the old fragile offset hack.
     assert "#v(3pt)#circle" not in doc
+
+
+def test_certification_marker_centers_on_font_metrics_not_a_hardcoded_offset():
+    """
+    Same fix, applied to the certifications section, which used its own
+    independent `#v(4pt)#circle(...)` offset hack.
+    """
+    cv = _sample_cv(["A bullet."])
+    doc = build_typst_doc(cv)
+
+    assert "#box(width:14pt,height:1em)" in doc
+    # Guard against regressing to the old fragile offset hack.
+    assert "#v(4pt)#circle" not in doc
 
 
 def test_bullet_list_omitted_when_no_bullets():
