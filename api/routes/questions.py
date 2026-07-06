@@ -1,8 +1,28 @@
 """
 questions.py — Routes for the Application Questions Handler.
 
-All routes accept the application's uuid as the path parameter.
-Internal FK queries use app["id"] (the slug) after lookup.
+Manages questions, answers, and feedback for a given application.
+Questions and answers are stored per-application; tone is read from
+the application's qa_tone field.
+
+Endpoints:
+  GET    /questions/{app_uuid}                   — list questions with latest answers
+  POST   /questions/{app_uuid}                   — add a question
+  PATCH  /questions/{app_uuid}/{q_id}            — update question (text/length/research/order)
+  DELETE /questions/{app_uuid}/{q_id}            — remove a question
+  POST   /questions/{app_uuid}/generate          — batch-generate answers
+  POST   /questions/{app_uuid}/{q_id}/regenerate — regenerate a single answer
+  PATCH  /questions/{app_uuid}/{q_id}/answer     — save user-edited answer text
+  POST   /questions/{app_uuid}/{q_id}/feedback   — submit feedback (async processing)
+
+Generation:
+  force=False (default) — only generates answers for questions that have none.
+  force=True            — regenerates all questions unconditionally.
+  question_ids          — optional list to target specific questions only.
+
+Feedback:
+  Saved synchronously; Haiku distillation runs as a BackgroundTask.
+  The endpoint returns immediately with {"status": "received"}.
 """
 
 import logging
@@ -20,9 +40,9 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/questions", tags=["questions"])
 
-VALID_LENGTHS = {"short", "paragraph"}
-VALID_RATINGS = {"positive", "negative"}
-MAX_QUESTIONS = 20
+VALID_LENGTHS   = {"short", "paragraph"}
+VALID_RATINGS   = {"positive", "negative"}
+MAX_QUESTIONS   = 20
 
 
 # ── Pydantic models ───────────────────────────────────────────────────────────
@@ -146,14 +166,16 @@ def add_question(
             status_code=422,
             detail=f"Invalid response_length: {body.response_length!r}. Must be one of: {sorted(VALID_LENGTHS)}",
         )
+
     if not body.question_text.strip():
         raise HTTPException(status_code=422, detail="question_text cannot be empty")
 
     count = db.execute(
-        "SELECT COUNT(*) FROM application_questions WHERE application_id = ?", (app_id,)
+        "SELECT COUNT(*) FROM application_questions WHERE application_id = ?",
+        (app_id,),
     ).fetchone()[0]
     if count >= MAX_QUESTIONS:
-        log.warning("Application %s has %d questions — at limit", app_id, count)
+        log.warning("Application %s has %d questions — approaching limit", app_id, count)
 
     q_id = str(uuid.uuid4())
     now  = datetime.now().isoformat()
@@ -166,8 +188,10 @@ def add_question(
          body.needs_research, body.sort_order, now),
     )
 
-    row = db.execute("SELECT * FROM application_questions WHERE id = ?", (q_id,)).fetchone()
-    q   = row_to_dict(row)
+    row = db.execute(
+        "SELECT * FROM application_questions WHERE id = ?", (q_id,)
+    ).fetchone()
+    q = row_to_dict(row)
     q["answer"]           = None
     q["effective_answer"] = None
     return q
@@ -186,7 +210,9 @@ def update_question(
 
     updates = body.model_dump(exclude_none=True)
     if not updates:
-        row = db.execute("SELECT * FROM application_questions WHERE id = ?", (q_id,)).fetchone()
+        row = db.execute(
+            "SELECT * FROM application_questions WHERE id = ?", (q_id,)
+        ).fetchone()
         return row_to_dict(row)
 
     if "response_length" in updates and updates["response_length"] not in VALID_LENGTHS:
@@ -200,7 +226,9 @@ def update_question(
         list(updates.values()) + [q_id],
     )
 
-    row    = db.execute("SELECT * FROM application_questions WHERE id = ?", (q_id,)).fetchone()
+    row    = db.execute(
+        "SELECT * FROM application_questions WHERE id = ?", (q_id,)
+    ).fetchone()
     q      = row_to_dict(row)
     answer = _latest_answer_for_question(q_id, db)
     q["answer"]           = answer
@@ -286,6 +314,7 @@ def generate_answers(
     for q in to_generate:
         answer_text = answers_map.get(q["id"])
         if not answer_text:
+            log.warning("No answer returned for question %s — skipping insert", q["id"])
             skipped += 1
             continue
 
@@ -375,6 +404,7 @@ def update_answer(
         "UPDATE application_answers SET user_answer = ? WHERE id = ?",
         (body.user_answer, answer["id"]),
     )
+
     return {
         "answer_id":        answer["id"],
         "question_id":      q_id,
@@ -391,6 +421,7 @@ def submit_feedback(
     background_tasks: BackgroundTasks,
     db:               sqlite3.Connection = Depends(get_db),
 ):
+    """Record thumbs-up/down feedback. Returns immediately; Haiku distillation runs as a background task."""
     app    = _get_app_by_uuid(app_uuid, db)
     app_id = app["id"]
     _get_question_or_404(q_id, app_id, db)
