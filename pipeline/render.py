@@ -177,7 +177,8 @@ def _render_exp(e: ExperienceEntry) -> str:
         )
         out.append(
             f'#list(\n'
-            f'  marker:[#v(3pt)#circle(radius:2pt,fill:rgb("{P["dot"]}"))],\n'
+            f'  marker:[#text(size:9pt)[#box(width:8pt,height:1em)'
+            f'[#align(center+horizon)[#circle(radius:2pt,fill:rgb("{P["dot"]}"))]]]],\n'
             f'  indent:0pt,spacing:5pt,body-indent:10pt,\n'
             f'{items}\n'
             f')'
