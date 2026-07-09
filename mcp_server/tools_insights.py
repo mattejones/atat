@@ -15,6 +15,11 @@ from mcp_server.helpers import get_connection, rows_to_list
 
 STAT_GROUP_COLUMNS = {"tier", "work_arrangement", "location", "company"}
 
+# Statuses treated as "this CV actually worked" for get_reference_cvs —
+# graduated past pure generation into a real submission, or further.
+DEFAULT_REFERENCE_STATUSES = ["applied", "acknowledged", "interviewing", "case_study", "offered"]
+MAX_REFERENCE_CVS = 10
+
 # All of these tools return rows to an LLM's context, not to a UI with
 # virtualized scrolling — every list-shaped tool here caps how many rows it
 # will ever return, regardless of what a caller asks for.
@@ -107,6 +112,57 @@ def get_success_stats(group_by: str = "tier", limit: int = 50) -> list[dict]:
         stats[key]["total"] += row["count"]
 
     return sorted(stats.values(), key=lambda s: -s["total"])[:limit]
+
+
+@mcp.tool()
+def get_reference_cvs(
+    statuses: Optional[list[str]] = None,
+    limit: int = 5,
+    tier: Optional[str] = None,
+) -> list[dict]:
+    """
+    Return full CV content for your most recent *successful* applications —
+    ones that actually got submitted or further, not just generated. Use
+    these as few-shot examples of what's worked before generating a new CV,
+    rather than starting from the cv-library alone every time: real accepted
+    phrasing, structure, and emphasis beats reconstructing it from scratch.
+
+    statuses: which outcomes count as "successful" — default is everything
+    that graduated past pure generation/review: applied, acknowledged,
+    interviewing, case_study, offered. Narrow it (e.g. ["interviewing",
+    "offered"]) for a stronger-signal-only set.
+    tier: optionally restrict to one tier (T1/T2/T3/EX1) — useful since a
+    T1 target role probably wants T1-caliber examples, not T3 ones.
+    limit: capped at 10 — this returns full cv_markdown per application, so
+    keep it tight. Use list_applications/search_applications first if you
+    need to browse and pick specific ones instead.
+
+    Returns most recent first: [{uuid, company, role, tier, status,
+    cv_markdown}, ...].
+    """
+    limit = max(1, min(limit, MAX_REFERENCE_CVS))
+    statuses = statuses or DEFAULT_REFERENCE_STATUSES
+    placeholders = ",".join("?" * len(statuses))
+    params: list = list(statuses)
+
+    tier_clause = ""
+    if tier:
+        tier_clause = " AND tier = ?"
+        params.append(tier)
+
+    with get_connection() as db:
+        rows = db.execute(
+            f"""
+            SELECT uuid, company, role, tier, status, cv_markdown
+            FROM applications
+            WHERE status IN ({placeholders}) {tier_clause}
+              AND cv_markdown IS NOT NULL AND trim(cv_markdown) != ''
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            [*params, limit],
+        ).fetchall()
+        return rows_to_list(rows)
 
 
 @mcp.tool()

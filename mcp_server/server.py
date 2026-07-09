@@ -40,6 +40,7 @@ import mcp_server.tools_intake  # noqa: F401
 import mcp_server.tools_library  # noqa: F401
 import mcp_server.tools_meta  # noqa: F401
 import mcp_server.tools_pipeline  # noqa: F401
+import mcp_server.tools_prompt_tuning  # noqa: F401
 import mcp_server.tools_questions  # noqa: F401
 import mcp_server.tools_submission  # noqa: F401
 import mcp_server.resources  # noqa: F401

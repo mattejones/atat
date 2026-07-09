@@ -39,7 +39,11 @@ the `uuid` value from list_applications/get_application/submit_job's response.
    a methodology, a kind of achievement) that you're not sure the library
    covers well, use `search_library(query)` to find the relevant experience
    entry/persona before writing `generation_notes` that references it —
-   don't guess at what's in the library, check it.
+   don't guess at what's in the library, check it. Also pull
+   `get_reference_cvs(tier=...)` — real CVs from applications that actually
+   got submitted or further — and use their phrasing/structure/emphasis as
+   the starting template rather than reconstructing everything from the raw
+   cv-library each time.
 4. `submit_job(jd_text, company, role, source_url, ...)` — creates the
    application, generates a CV, splits it into sections, runs the judge
    pipeline automatically, and renders an initial PDF.
@@ -93,6 +97,19 @@ small. That's irrelevant for dupe-checking (you only need company/role/
 status/source_url from the summary); it matters if you're doing a broader
 history scan, where you'd page through with `offset` and call
 `get_application(uuid)` for full content on anything specific.
+
+## Fixing a recurring mistake permanently, not per-CV
+If you (or the human) notice the *same* thing needs correcting across
+multiple CVs — a phrase to avoid, a formatting habit, a framing that keeps
+coming out wrong — don't just fix it in this one CV's `generation_notes` and
+move on; that same correction will be needed again next time. Instead call
+`add_personal_rule(rule)` once. It's appended to `personal_additions.md`,
+which is loaded into the system prompt on *every* future `submit_job` call
+— a one-time fix instead of a standing chore. `get_personal_additions()`
+shows what's already there (check before adding, to avoid near-duplicate
+rules). Note: this only affects fresh `submit_job` generations, not a
+`regenerate_section` retry already in progress — a different, narrower
+prompt is used for retries.
 
 ## The cv-library — raw source material, not generated output
 `get_cv_markdown(app_uuid)` returns a *tailored, already-generated* CV for

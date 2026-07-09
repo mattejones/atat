@@ -128,8 +128,8 @@ cp .mcp.json.example .mcp.json    # then add it to your MCP client's config
 - **Applications** — `list_applications`, `get_application`, `get_cv_markdown`,
   `get_reasoning`, `get_events`, `get_dates`, `log_date`, `add_note`,
   `update_application`, `update_cv_markdown`, `render_cv`
-- **Generation pipeline** — `list_sections`, `get_report`, `run_judges`,
-  `accept_report`, `regenerate_section`
+- **Generation pipeline** — `list_sections`, `get_section_chain`, `get_report`,
+  `run_judges`, `accept_report`, `regenerate_section`
 - **Cover letters** — `get_cover_letter`, `generate_cover_letter`,
   `update_cover_letter`, `render_cover_letter`
 - **Application questions** — `list_questions`, `add_question`,
@@ -138,16 +138,28 @@ cp .mcp.json.example .mcp.json    # then add it to your MCP client's config
   `get_recent_notes`
 - **Submission** — `get_application_bundle`, `record_submission`
 - **Insights** — `get_prompt_signals`, `get_exclusion_patterns`,
-  `get_success_stats`, `search_applications`, `get_flag_history`
+  `get_success_stats`, `search_applications`, `get_flag_history`,
+  `get_reference_cvs`
 - **cv-library** — `list_experience_entries`, `get_experience_entry`,
   `list_personas`, `get_persona`, `get_skills`, `get_meta`, `search_library`
+- **Prompt tuning** — `get_personal_additions`, `add_personal_rule`,
+  `update_personal_additions`
 - **Meta** — `get_guide`
 
 `render_cv` matters after any `accept_report`/`regenerate_section` call — those
-update `cv.md` but don't auto-render a new PDF (same as the web UI). The
-cv-library tools expose the *raw, untailored* source material (experience
-entries, personas, skills, contact info) — distinct from `get_cv_markdown`,
-which returns one application's already-tailored output. `get_guide` (and the
+update `cv.md` but don't auto-render a new PDF (same as the web UI).
+`list_sections`' `latest_report` field carries the `report_id` every
+generation-pipeline tool needs — `accepted_report_id` is NULL until
+something's actually been accepted, so it's the only way to find a report id
+right after `submit_job`. The cv-library tools expose the *raw, untailored*
+source material (experience entries, personas, skills, contact info) —
+distinct from `get_cv_markdown` (one application's already-tailored output)
+and `get_reference_cvs` (full CV content from applications that actually got
+submitted or further — real working examples, not raw source material).
+`add_personal_rule` is the fix for a *recurring* generation mistake — it's
+appended to `personal_additions.md`, loaded into every future `submit_job`
+call's system prompt, so a correction only has to be made once rather than
+re-typed into `generation_notes` on every CV. `get_guide` (and the
 equivalent `atat://guide` resource, for clients that support MCP resources)
 is a fetchable workflow-sequencing and valid-value glossary that doesn't
 belong to any single tool's docstring — call it first in a new session.
