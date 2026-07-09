@@ -27,6 +27,9 @@ from pipeline.config import (
 )
 
 
+MAX_LIST_LIMIT = 100
+
+
 def _slugify(text: str, max_len: int) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower())[:max_len].strip("-")
 
@@ -50,6 +53,45 @@ def find_by_source_url(url: str) -> Optional[dict]:
             (url,),
         ).fetchone()
         return enrich_app(row_to_dict(row)) if row else None
+
+
+@mcp.tool()
+def get_recent_notes(limit: int = 10) -> list[dict]:
+    """
+    Return the most recent distinct generation_notes across all applications
+    — the "notes added when generating a CV" field, not the freeform
+    post-hoc `notes` field (get that per-application via get_application).
+
+    Call this before submit_job to see what guidance you (or a past session)
+    gave on similar past generations — e.g. "always downplay the people-
+    management angle for IC roles" — and fold anything still relevant into
+    the new call's generation_notes. Deduplicated by exact text; each entry
+    also shows which company/role it was used for.
+    """
+    limit = max(1, min(limit, MAX_LIST_LIMIT))
+    with get_connection() as db:
+        rows = db.execute(
+            """
+            SELECT generation_notes AS text, company, role
+            FROM applications
+            WHERE generation_notes IS NOT NULL
+              AND trim(generation_notes) != ''
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit * 3,),  # over-fetch — dedup below can collapse multiple rows into one
+        ).fetchall()
+
+    seen: set = set()
+    result: list = []
+    for row in rows:
+        text = row["text"].strip()
+        if text not in seen:
+            seen.add(text)
+            result.append({"text": text, "company": row["company"], "role": row["role"]})
+        if len(result) >= limit:
+            break
+    return result
 
 
 @mcp.tool()
@@ -113,7 +155,9 @@ def submit_job(
     a PDF if RENDER_PDF is enabled.
 
     generation_notes: freeform guidance for this generation (e.g. "emphasize
-    the platform migration work, downplay people management").
+    the platform migration work, downplay people management"). Call
+    get_recent_notes() first to see what guidance was used on similar past
+    applications before writing this.
 
     Returns the new application's uuid, cv_markdown, and whether reasoning
     was captured. Follow up with list_sections/get_report/run_judges to

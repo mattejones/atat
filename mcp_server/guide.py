@@ -31,7 +31,11 @@ the `uuid` value from list_applications/get_application/submit_job's response.
 2. **Check for a dupe before doing anything else** — see the section below.
    If one exists, don't regenerate; pick up from its current status instead.
 3. Before generating, check history: `search_applications`, `get_prompt_signals`,
-   `get_success_stats` — bias the generation toward what's worked before.
+   `get_success_stats`, and `get_recent_notes()` (past generation_notes —
+   the guidance given on previous CVs, distinct from a specific
+   application's freeform `notes` field) — bias the generation toward what's
+   worked before, and fold anything still relevant into this call's
+   `generation_notes`.
 4. `submit_job(jd_text, company, role, source_url, ...)` — creates the
    application, generates a CV, splits it into sections, runs the judge
    pipeline automatically, and renders an initial PDF.
