@@ -134,15 +134,23 @@ cp .mcp.json.example .mcp.json    # then add it to your MCP client's config
   `update_cover_letter`, `render_cover_letter`
 - **Application questions** — `list_questions`, `add_question`,
   `delete_question`, `generate_answers`, `update_answer`, `submit_answer_feedback`
-- **Intake** — `scrape_job_url`, `submit_job`, `find_by_source_url`
+- **Intake** — `scrape_job_url`, `submit_job`, `find_by_source_url`,
+  `get_recent_notes`
 - **Submission** — `get_application_bundle`, `record_submission`
 - **Insights** — `get_prompt_signals`, `get_exclusion_patterns`,
   `get_success_stats`, `search_applications`, `get_flag_history`
+- **cv-library** — `list_experience_entries`, `get_experience_entry`,
+  `list_personas`, `get_persona`, `get_skills`, `get_meta`, `search_library`
+- **Meta** — `get_guide`
 
 `render_cv` matters after any `accept_report`/`regenerate_section` call — those
-update `cv.md` but don't auto-render a new PDF (same as the web UI). A resource,
-`atat://guide`, is also exposed — it's a fetchable workflow-sequencing and
-valid-value glossary that doesn't belong to any single tool's docstring.
+update `cv.md` but don't auto-render a new PDF (same as the web UI). The
+cv-library tools expose the *raw, untailored* source material (experience
+entries, personas, skills, contact info) — distinct from `get_cv_markdown`,
+which returns one application's already-tailored output. `get_guide` (and the
+equivalent `atat://guide` resource, for clients that support MCP resources)
+is a fetchable workflow-sequencing and valid-value glossary that doesn't
+belong to any single tool's docstring — call it first in a new session.
 
 ### Working a Todoist queue
 

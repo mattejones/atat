@@ -35,7 +35,11 @@ the `uuid` value from list_applications/get_application/submit_job's response.
    the guidance given on previous CVs, distinct from a specific
    application's freeform `notes` field) — bias the generation toward what's
    worked before, and fold anything still relevant into this call's
-   `generation_notes`.
+   `generation_notes`. If the JD calls out something specific (a technology,
+   a methodology, a kind of achievement) that you're not sure the library
+   covers well, use `search_library(query)` to find the relevant experience
+   entry/persona before writing `generation_notes` that references it —
+   don't guess at what's in the library, check it.
 4. `submit_job(jd_text, company, role, source_url, ...)` — creates the
    application, generates a CV, splits it into sections, runs the judge
    pipeline automatically, and renders an initial PDF.
@@ -81,6 +85,22 @@ small. That's irrelevant for dupe-checking (you only need company/role/
 status/source_url from the summary); it matters if you're doing a broader
 history scan, where you'd page through with `offset` and call
 `get_application(uuid)` for full content on anything specific.
+
+## The cv-library — raw source material, not generated output
+`get_cv_markdown(app_uuid)` returns a *tailored, already-generated* CV for
+one application. That's different from the cv-library — the canonical,
+untailored experience entries/personas/skills every generation actually
+draws from (`pipeline.tailorer.load_experience_files` etc. under the hood).
+The library is the better source for "what could I include" — it's the
+ground truth, not a derivative of it:
+- `list_experience_entries()` / `get_experience_entry(filename)` — job
+  history, one entry per role.
+- `list_personas()` / `get_persona(name)` — different framings of the same
+  experience (e.g. "sales-ops-leader" vs "account-executive").
+- `get_skills()` — the full skills inventory.
+- `get_meta()` — name/contact/links used in every CV header.
+- `search_library(query)` — keyword search across all of the above without
+  loading everything; returns matching snippets, not full files.
 
 ## What this server does NOT do
 No Todoist or browser tools live here — that orchestration is expected to
