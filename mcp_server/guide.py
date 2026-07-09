@@ -43,11 +43,19 @@ the `uuid` value from list_applications/get_application/submit_job's response.
 4. `submit_job(jd_text, company, role, source_url, ...)` — creates the
    application, generates a CV, splits it into sections, runs the judge
    pipeline automatically, and renders an initial PDF.
-5. Per section: `get_report(report_id)` to see judge flags.
+5. `list_sections(app_uuid)` — each section comes back with `latest_report`.
+   **`latest_report.id` is the `report_id`** every tool below needs. Don't
+   use `accepted_report_id` for this — it's NULL until something's been
+   accepted, so right after submit_job it's `latest_report.id` or nothing.
+   Then per section: `get_report(report_id)` to see judge flags.
    - Clean (zero active flags) -> `accept_report(report_id)`.
    - Flagged -> `regenerate_section(report_id, global_comment?)` to retry
-     against the flags, or leave it and flag the whole application for human
-     review — don't guess on subjective accuracy flags.
+     against the flags, then re-run `list_sections` (or just note the
+     `new_report_id` regenerate_section returns) to get the new report_id —
+     or leave it and flag the whole application for human review, don't
+     guess on subjective accuracy flags.
+   - Want the full retry history for a section, not just the latest attempt?
+     `get_section_chain(app_uuid, section_name)`.
 6. `render_cv(app_uuid)` after any accept/regenerate — cv.md changes don't
    auto-render a new PDF.
 7. `generate_cover_letter(app_uuid, ...)`, then `render_cover_letter(app_uuid)`.

@@ -1,9 +1,17 @@
 """
 tools_pipeline.py — CV section generation/judge/review MCP tools.
 
-Mirrors api/routes/review.py. An agent uses these to inspect judge flags on a
-generated section, retry a section against those flags, and accept the
-winning report so it becomes canonical in cv.md.
+Mirrors api/routes/review.py (get_report/run_judges/accept_report/
+regenerate_section) and api/routes/sections.py (list_sections/
+get_section_chain). An agent uses these to discover a section's current
+report_id, inspect judge flags on it, retry against those flags, and accept
+the winning report so it becomes canonical in cv.md.
+
+list_sections originally did a naive `SELECT * FROM sections`, which only
+carries accepted_report_id — NULL until something's been accepted. That left
+no way to find a report_id for a freshly generated, not-yet-reviewed
+application at all, making the rest of this module unreachable right after
+submit_job. Fixed to mirror the real route's `latest_report` nesting.
 """
 
 import uuid
@@ -83,15 +91,71 @@ def _next_attempt(db, section_id: str) -> int:
     return (row[0] or 0) + 1
 
 
+def _latest_report_summary(db, section_id: str) -> Optional[dict]:
+    row = db.execute(
+        """SELECT id, attempt, status, escalated, escalation_reason, created_at, parent_report_id
+           FROM reports WHERE section_id = ? ORDER BY attempt DESC LIMIT 1""",
+        (section_id,),
+    ).fetchone()
+    return row_to_dict(row) if row else None
+
+
 @mcp.tool()
 def list_sections(app_uuid: str) -> list[dict]:
-    """List all CV sections for an application, with their accepted_report_id if one has been accepted."""
+    """
+    List all CV sections for an application, each with `latest_report`
+    (the most recent generation attempt for that section — its id, attempt
+    number, status, and whether it was escalated).
+
+    `latest_report.id` is the `report_id` to pass into get_report/run_judges/
+    accept_report/regenerate_section. Use this, not `accepted_report_id` —
+    accepted_report_id is NULL until something has actually been accepted,
+    so right after submit_job (before any review has happened) it's the
+    *only* way to find a section's report id.
+    """
     with get_connection() as db:
         app = get_app_by_uuid(app_uuid, db)
         rows = db.execute(
-            "SELECT * FROM sections WHERE application_id = ? ORDER BY section_name", (app["id"],)
+            "SELECT id, section_name, accepted_report_id, updated_at FROM sections WHERE application_id = ? ORDER BY section_name",
+            (app["id"],),
         ).fetchall()
-        return rows_to_list(rows)
+        result = []
+        for row in rows:
+            section = row_to_dict(row)
+            section["latest_report"] = _latest_report_summary(db, section["id"])
+            result.append(section)
+        return result
+
+
+@mcp.tool()
+def get_section_chain(app_uuid: str, section_name: str) -> dict:
+    """
+    Return the full generation history for one section — every attempt
+    (accepted, rejected, and pending), oldest first, with each report's id,
+    status, and escalation info. Use this to see the whole retry chain
+    rather than just the latest attempt (list_sections gives you that).
+
+    section_name: profile | experience | skills | education | certifications
+    """
+    with get_connection() as db:
+        app = get_app_by_uuid(app_uuid, db)
+        section_row = db.execute(
+            "SELECT id, section_name, accepted_report_id FROM sections WHERE application_id = ? AND section_name = ?",
+            (app["id"], section_name),
+        ).fetchone()
+        if not section_row:
+            raise ValueError(f"Section {section_name!r} not found for this application")
+        section = row_to_dict(section_row)
+        reports = db.execute(
+            """SELECT id, attempt, status, escalated, escalation_reason, created_at, parent_report_id
+               FROM reports WHERE section_id = ? ORDER BY attempt ASC""",
+            (section["id"],),
+        ).fetchall()
+        return {
+            "section_name": section["section_name"],
+            "accepted_report_id": section["accepted_report_id"],
+            "reports": rows_to_list(reports),
+        }
 
 
 @mcp.tool()
