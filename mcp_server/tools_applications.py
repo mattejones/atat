@@ -26,27 +26,71 @@ VALID_STATUSES = {
 VALID_TIERS = {"T1", "T2", "T3", "EX1"}
 VALID_ARRANGEMENTS = {"remote", "hybrid", "office"}
 
+# Large free-text columns stripped from list views — jd_text and reasoning
+# especially can each run tens of KB (reasoning is raw extended-thinking
+# output). A list of many applications carrying all of these easily blows
+# past an MCP client's response size limit (seen in practice around 1MB).
+# Full content is one call away via get_application/get_cv_markdown/get_reasoning.
+_LIST_VIEW_OMIT = {"jd_text", "cv_markdown", "reasoning", "notes", "generation_notes"}
+
+DEFAULT_PAGE_SIZE = 25
+MAX_PAGE_SIZE = 100
+
+
+def _to_list_view(app: dict) -> dict:
+    return {k: v for k, v in app.items() if k not in _LIST_VIEW_OMIT}
+
 
 @mcp.tool()
-def list_applications(include_archived: bool = False, status: Optional[str] = None) -> list[dict]:
+def list_applications(
+    include_archived: bool = False,
+    status: Optional[str] = None,
+    limit: int = DEFAULT_PAGE_SIZE,
+    offset: int = 0,
+) -> dict:
     """
-    List applications, most recent first.
+    List applications, most recent first, paginated.
 
     Args:
         include_archived: include applications with status='archived'.
         status: optionally filter to a single status value.
+        limit: page size (default 25, capped at 100).
+        offset: rows to skip — use with `has_more`/`total` to page through
+            everything (e.g. offset=0, then offset=25, then offset=50...).
+
+    Returns {applications, total, limit, offset, has_more}. Each application
+    is a summary — jd_text, cv_markdown, reasoning, notes, and
+    generation_notes are omitted here (that's most of what makes a full
+    application record large). Call get_application(uuid) for the full
+    record, or get_cv_markdown/get_reasoning for just those fields.
     """
+    limit = max(1, min(limit, MAX_PAGE_SIZE))
+    offset = max(0, offset)
+
+    where_clauses = [] if include_archived else ["status != 'archived'"]
+    params: list = []
+    if status:
+        where_clauses.append("status = ?")
+        params.append(status)
+    where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
     with get_connection() as db:
-        if include_archived:
-            rows = db.execute("SELECT * FROM applications ORDER BY created_at DESC").fetchall()
-        else:
-            rows = db.execute(
-                "SELECT * FROM applications WHERE status != 'archived' ORDER BY created_at DESC"
-            ).fetchall()
-        apps = [enrich_app(row_to_dict(r)) for r in rows]
-        if status:
-            apps = [a for a in apps if a["status"] == status]
-        return apps
+        total = db.execute(
+            f"SELECT COUNT(*) FROM applications {where_sql}", params
+        ).fetchone()[0]
+        rows = db.execute(
+            f"SELECT * FROM applications {where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            [*params, limit, offset],
+        ).fetchall()
+        apps = [_to_list_view(enrich_app(row_to_dict(r))) for r in rows]
+
+    return {
+        "applications": apps,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "has_more": offset + len(apps) < total,
+    }
 
 
 @mcp.tool()
@@ -86,13 +130,21 @@ def get_reasoning(app_uuid: str) -> str:
 
 
 @mcp.tool()
-def get_events(app_uuid: str) -> list[dict]:
-    """Return the full audit-log timeline (status changes, notes, edits) for an application."""
+def get_events(app_uuid: str, limit: int = 50) -> list[dict]:
+    """
+    Return the audit-log timeline (status changes, notes, edits) for an
+    application, most recent first.
+
+    limit: max events to return (default 50, capped at 200). Long-lived
+    applications can accumulate a lot of events — this caps it rather than
+    dumping the whole history every call.
+    """
+    limit = max(1, min(limit, 200))
     with get_connection() as db:
         app = get_app_by_uuid(app_uuid, db)
         rows = db.execute(
-            "SELECT * FROM application_events WHERE application_id = ? ORDER BY occurred_at DESC",
-            (app["id"],),
+            "SELECT * FROM application_events WHERE application_id = ? ORDER BY occurred_at DESC LIMIT ?",
+            (app["id"], limit),
         ).fetchall()
         return rows_to_list(rows)
 

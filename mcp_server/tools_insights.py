@@ -15,6 +15,11 @@ from mcp_server.helpers import get_connection, rows_to_list
 
 STAT_GROUP_COLUMNS = {"tier", "work_arrangement", "location", "company"}
 
+# All of these tools return rows to an LLM's context, not to a UI with
+# virtualized scrolling — every list-shaped tool here caps how many rows it
+# will ever return, regardless of what a caller asks for.
+MAX_LIST_LIMIT = 100
+
 
 @mcp.tool()
 def get_prompt_signals(limit: int = 30) -> list[dict]:
@@ -23,7 +28,10 @@ def get_prompt_signals(limit: int = 30) -> list[dict]:
     actionable rules like "lead with a concrete example before the general
     principle" or "avoid generic phrases like 'passionate about'". Use these
     to bias tone/content before generating new question answers or CV copy.
+
+    limit: capped at 100.
     """
+    limit = max(1, min(limit, MAX_LIST_LIMIT))
     with get_connection() as db:
         rows = db.execute(
             """
@@ -43,12 +51,15 @@ def get_prompt_signals(limit: int = 30) -> list[dict]:
 
 
 @mcp.tool()
-def get_exclusion_patterns() -> list[dict]:
+def get_exclusion_patterns(limit: int = 50) -> list[dict]:
     """
     Aggregate EX1-tier exclusion reasons and filter suggestions — recurring
     reasons a role was excluded, useful for deciding whether to even bother
-    generating a CV for a borderline job ad.
+    generating a CV for a borderline job ad. Most common first.
+
+    limit: capped at 100.
     """
+    limit = max(1, min(limit, MAX_LIST_LIMIT))
     with get_connection() as db:
         rows = db.execute(
             """
@@ -58,21 +69,28 @@ def get_exclusion_patterns() -> list[dict]:
             WHERE ef.filter_suggestion IS NOT NULL AND trim(ef.filter_suggestion) != ''
             GROUP BY ef.filter_suggestion
             ORDER BY count DESC
-            """
+            LIMIT ?
+            """,
+            (limit,),
         ).fetchall()
         return rows_to_list(rows)
 
 
 @mcp.tool()
-def get_success_stats(group_by: str = "tier") -> list[dict]:
+def get_success_stats(group_by: str = "tier", limit: int = 50) -> list[dict]:
     """
-    Break down application outcomes by a grouping dimension.
+    Break down application outcomes by a grouping dimension, largest group
+    first.
 
-    group_by: tier | work_arrangement | location | company
+    group_by: tier | work_arrangement | location | company. Note: `company`
+    and `location` can have as many distinct values as you have
+    applications — `limit` (default 50, capped at 100) caps how many
+    groups come back, not how many applications are counted.
     Returns, per group value: total applications and counts at each status.
     """
     if group_by not in STAT_GROUP_COLUMNS:
         raise ValueError(f"Invalid group_by: {group_by!r}. Must be one of {sorted(STAT_GROUP_COLUMNS)}")
+    limit = max(1, min(limit, MAX_LIST_LIMIT))
 
     with get_connection() as db:
         rows = db.execute(
@@ -88,7 +106,7 @@ def get_success_stats(group_by: str = "tier") -> list[dict]:
         stats[key][row["status"]] = row["count"]
         stats[key]["total"] += row["count"]
 
-    return sorted(stats.values(), key=lambda s: -s["total"])
+    return sorted(stats.values(), key=lambda s: -s["total"])[:limit]
 
 
 @mcp.tool()
@@ -97,8 +115,13 @@ def search_applications(query: str, limit: int = 20) -> list[dict]:
     Search past applications by free text across company, role, notes,
     JD text, and generation reasoning. Case-insensitive substring match.
     Use this before generating a new CV to find "have I applied somewhere
-    like this before, and what did I learn."
+    like this before, and what did I learn." Doesn't return jd_text/
+    reasoning themselves (only searches them) — call get_application(uuid)
+    for full content on a specific match.
+
+    limit: capped at 100.
     """
+    limit = max(1, min(limit, MAX_LIST_LIMIT))
     like = f"%{query}%"
     with get_connection() as db:
         rows = db.execute(
