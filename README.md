@@ -155,7 +155,9 @@ right after `submit_job`. The cv-library tools expose the *raw, untailored*
 source material (experience entries, personas, skills, contact info) —
 distinct from `get_cv_markdown` (one application's already-tailored output)
 and `get_reference_cvs` (full CV content from applications that actually got
-submitted or further — real working examples, not raw source material).
+*screened favorably* — interviewing/case_study/offered by default, ranked by
+outcome strength then recency, not merely applied — real working examples,
+not raw source material).
 `add_personal_rule` is the fix for a *recurring* generation mistake — it's
 appended to `personal_additions.md`, loaded into every future `submit_job`
 call's system prompt, so a correction only has to be made once rather than

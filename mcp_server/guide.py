@@ -41,9 +41,13 @@ the `uuid` value from list_applications/get_application/submit_job's response.
    entry/persona before writing `generation_notes` that references it —
    don't guess at what's in the library, check it. Also pull
    `get_reference_cvs(tier=...)` — real CVs from applications that actually
-   got submitted or further — and use their phrasing/structure/emphasis as
-   the starting template rather than reconstructing everything from the raw
-   cv-library each time.
+   got *screened favorably* (interviewing/case_study/offered by default,
+   not just applied — a CV that never got a response isn't evidence it
+   worked) — and use their phrasing/structure/emphasis as the starting
+   template rather than reconstructing everything from the raw cv-library
+   each time. If it comes back empty for this persona/tier, that's real
+   information (no proven-successful example exists yet) — don't silently
+   widen to weaker-signal statuses without saying so.
 4. `submit_job(jd_text, company, role, source_url, ...)` — creates the
    application, generates a CV, splits it into sections, runs the judge
    pipeline automatically, and renders an initial PDF.

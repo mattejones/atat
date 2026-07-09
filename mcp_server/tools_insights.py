@@ -15,9 +15,19 @@ from mcp_server.helpers import get_connection, rows_to_list
 
 STAT_GROUP_COLUMNS = {"tier", "work_arrangement", "location", "company"}
 
-# Statuses treated as "this CV actually worked" for get_reference_cvs —
-# graduated past pure generation into a real submission, or further.
-DEFAULT_REFERENCE_STATUSES = ["applied", "acknowledged", "interviewing", "case_study", "offered"]
+# Default statuses for get_reference_cvs — only ones with actual evidence a
+# human screened the CV favorably. "applied"/"acknowledged" mean "submitted,
+# nothing else known" — not the same signal, and were previously lumped in
+# by default, which let weak-signal CVs crowd out genuinely strong ones.
+# Ordinal strength for ranking results: higher = stronger evidence of success.
+REFERENCE_STATUS_RANK = {
+    "offered": 4,
+    "case_study": 3,
+    "interviewing": 2,
+    "acknowledged": 1,
+    "applied": 0,
+}
+DEFAULT_REFERENCE_STATUSES = ["interviewing", "case_study", "offered"]
 MAX_REFERENCE_CVS = 10
 
 # All of these tools return rows to an LLM's context, not to a UI with
@@ -121,24 +131,29 @@ def get_reference_cvs(
     tier: Optional[str] = None,
 ) -> list[dict]:
     """
-    Return full CV content for your most recent *successful* applications —
-    ones that actually got submitted or further, not just generated. Use
-    these as few-shot examples of what's worked before generating a new CV,
-    rather than starting from the cv-library alone every time: real accepted
-    phrasing, structure, and emphasis beats reconstructing it from scratch.
+    Return full CV content for applications where a human actually screened
+    it favorably — real evidence of what works, not just what got sent. Use
+    these as few-shot examples before generating a new CV, rather than
+    starting from the cv-library alone every time: real accepted phrasing,
+    structure, and emphasis beats reconstructing it from scratch.
 
-    statuses: which outcomes count as "successful" — default is everything
-    that graduated past pure generation/review: applied, acknowledged,
-    interviewing, case_study, offered. Narrow it (e.g. ["interviewing",
-    "offered"]) for a stronger-signal-only set.
+    statuses: default is interviewing/case_study/offered only — actual
+    screening signal. "applied"/"acknowledged" mean "submitted, nothing
+    else known" and are deliberately excluded by default; pass them
+    explicitly (e.g. statuses=["applied","interviewing","offered"]) if you
+    want that weaker-signal fallback too, e.g. because there aren't enough
+    interviewing+ examples yet for this persona/tier.
     tier: optionally restrict to one tier (T1/T2/T3/EX1) — useful since a
     T1 target role probably wants T1-caliber examples, not T3 ones.
     limit: capped at 10 — this returns full cv_markdown per application, so
     keep it tight. Use list_applications/search_applications first if you
     need to browse and pick specific ones instead.
 
-    Returns most recent first: [{uuid, company, role, tier, status,
-    cv_markdown}, ...].
+    Ranked strongest outcome first (offered > case_study > interviewing >
+    acknowledged > applied), most recent first within the same outcome —
+    not just most recent overall, so a strong result from months ago still
+    outranks a merely-applied one from yesterday.
+    Returns [{uuid, company, role, tier, status, cv_markdown}, ...].
     """
     limit = max(1, min(limit, MAX_REFERENCE_CVS))
     statuses = statuses or DEFAULT_REFERENCE_STATUSES
@@ -153,16 +168,25 @@ def get_reference_cvs(
     with get_connection() as db:
         rows = db.execute(
             f"""
-            SELECT uuid, company, role, tier, status, cv_markdown
+            SELECT uuid, company, role, tier, status, cv_markdown, created_at
             FROM applications
             WHERE status IN ({placeholders}) {tier_clause}
               AND cv_markdown IS NOT NULL AND trim(cv_markdown) != ''
-            ORDER BY created_at DESC
-            LIMIT ?
             """,
-            [*params, limit],
+            params,
         ).fetchall()
-        return rows_to_list(rows)
+
+    # Strongest outcome first, then most recent within the same outcome —
+    # both components sort ascending naturally in the same direction, so a
+    # single reverse=True on the tuple key does the right thing for both.
+    ranked = sorted(
+        rows_to_list(rows),
+        key=lambda r: (REFERENCE_STATUS_RANK.get(r["status"], -1), r["created_at"]),
+        reverse=True,
+    )
+    for r in ranked:
+        r.pop("created_at", None)
+    return ranked[:limit]
 
 
 @mcp.tool()
