@@ -138,6 +138,26 @@ def _sh(title: str) -> str:
     )
 
 
+# ── Bullet marker ──────────────────────────────────────────────────────────────
+
+def _bullet_marker(width_pt: int) -> str:
+    """
+    Bullet dot, vertically centered against the *measured* line-height of
+    9pt body text. Poppins' real ascent+descent metric (~6.3pt at 9pt size)
+    is noticeably shorter than the nominal 1em/font-size box, so sizing the
+    marker box to a static 1em left the dot sitting visibly off-center.
+    Measuring a representative glyph run at compile time keeps this correct
+    regardless of the font or size in use.
+    """
+    return (
+        f'#context [\n'
+        f'  #let lh = measure([#text(size:9pt)[Mg]]).height\n'
+        f'  #box(width:{width_pt}pt,height:lh)[#align(center+horizon)'
+        f'[#circle(radius:2pt,fill:rgb("{P["dot"]}"))]]\n'
+        f']'
+    )
+
+
 # ── Experience ─────────────────────────────────────────────────────────────────
 
 def _render_exp(e: ExperienceEntry) -> str:
@@ -177,7 +197,7 @@ def _render_exp(e: ExperienceEntry) -> str:
         )
         out.append(
             f'#list(\n'
-            f'  marker:[#v(3pt)#circle(radius:2pt,fill:rgb("{P["dot"]}"))],\n'
+            f'  marker:[{_bullet_marker(8)}],\n'
             f'  indent:0pt,spacing:5pt,body-indent:10pt,\n'
             f'{items}\n'
             f')'
@@ -211,7 +231,7 @@ def _render_cert(cert: str) -> str:
     c = esc(cert)
     return (
         f'#grid(columns:(14pt,1fr),align:(center+top,left+top),'
-        f'[#v(4pt)#circle(radius:2pt,fill:rgb("{P["dot"]}"))],\n'
+        f'[{_bullet_marker(14)}],\n'
         f'[#par(leading:6pt)[#text(font:"Poppins",size:9pt,weight:"regular",'
         f'fill:rgb("{P["body"]}"))[{c}]]])\n'
         f'#v(5pt)'
