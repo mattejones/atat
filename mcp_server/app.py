@@ -24,6 +24,8 @@ mcp = FastMCP(
         "generation and the section judge/review pipeline, generate cover letters and "
         "application question answers, and mine past feedback for patterns before "
         "generating new content. Applications are addressed by their `uuid` field "
-        "(not `id`, which is a filesystem slug used internally)."
+        "(not `id`, which is a filesystem slug used internally). Call get_guide() "
+        "first if this is a new session — it covers the end-to-end workflow and "
+        "every enum field's valid values."
     ),
 )
