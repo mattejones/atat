@@ -1,10 +1,22 @@
 """
 server.py — entrypoint for the ATAT MCP server.
 
-Run as a subprocess over stdio (the transport an MCP client like Claude
-Desktop or Claude Code spawns directly), e.g.:
+Transport is picked via ATAT_MCP_TRANSPORT (default "stdio"):
 
-    python -m mcp_server.server
+  stdio (default) — for a client that spawns this process itself, e.g. a
+    project-scoped .mcp.json entry in Claude Code:
+        python -m mcp_server.server
+
+  streamable-http — for a client that can only add HTTP MCP endpoints (some
+    Claude Desktop builds only support this, wrapped via `npx mcp-remote
+    <url>` — a client-recognized shape that survives that app's config
+    rewrites, unlike a hand-edited stdio entry). This process must already
+    be running before the client tries to connect — it isn't spawned
+    on-demand the way stdio servers are:
+        ATAT_MCP_TRANSPORT=streamable-http python -m mcp_server.server
+    Binds to ATAT_MCP_HOST:ATAT_MCP_PORT (see mcp_server/app.py), default
+    127.0.0.1:8765 — 8000/8001/3000/3001 are already used by ATAT's own
+    FastAPI/Next.js dev and prod servers.
 
 Migrations are applied on startup — this process is typically started fresh
 each session, not left running like the FastAPI app, and the two can run
@@ -16,6 +28,7 @@ onto the shared `mcp` instance from mcp_server.app.
 """
 
 import logging
+import os
 
 from mcp_server.app import mcp
 
@@ -41,7 +54,12 @@ def main() -> None:
     except Exception:
         log.exception("Migration failed — starting anyway, some tools may error")
 
-    mcp.run()
+    transport = os.getenv("ATAT_MCP_TRANSPORT", "stdio")
+    if transport not in ("stdio", "sse", "streamable-http"):
+        raise ValueError(f"Invalid ATAT_MCP_TRANSPORT: {transport!r}")
+    if transport != "stdio":
+        log.info("Serving over %s at http://%s:%s%s", transport, mcp.settings.host, mcp.settings.port, mcp.settings.streamable_http_path)
+    mcp.run(transport=transport)
 
 
 if __name__ == "__main__":
