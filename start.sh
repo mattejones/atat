@@ -15,6 +15,16 @@ if [[ "$1" == "--build" ]]; then
     FORCE_BUILD=true
 fi
 
+# nvm's PATH setup only runs in an interactive shell (guarded early-return in
+# ~/.bashrc) — a non-interactive invocation (a launcher, a scheduled task,
+# `bash -lc "./start.sh"`) never gets it, and npm/node silently fall back to
+# whatever's on Windows' PATH via WSL interop instead, breaking the frontend
+# in a confusing way (Windows' "not recognized as an internal or external
+# command" error appearing inside what looks like a Linux script). Source it
+# explicitly so this works the same interactively or not.
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+
 # Activate venv if present
 if [ -f "$SCRIPT_DIR/.venv/bin/activate" ]; then
     source "$SCRIPT_DIR/.venv/bin/activate"
@@ -55,7 +65,7 @@ FRONTEND_PID=$!
 # split concept for MCP the way there is for the web app; an MCP client's
 # config points at one fixed port).
 cd "$SCRIPT_DIR"
-ATAT_MCP_TRANSPORT=streamable-http python -m mcp_server.server &
+ATAT_MCP_TRANSPORT=streamable-http python3 -m mcp_server.server &
 MCP_PID=$!
 
 trap "kill $BACKEND_PID $FRONTEND_PID $MCP_PID 2>/dev/null; exit" INT TERM

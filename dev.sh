@@ -9,6 +9,13 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# nvm's PATH setup only runs in an interactive shell (guarded early-return in
+# ~/.bashrc) — a non-interactive invocation never gets it, and npm/node
+# silently fall back to whatever's on Windows' PATH via WSL interop instead.
+# Source it explicitly so this works the same interactively or not.
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+
 # Activate venv if present
 if [ -f "$SCRIPT_DIR/.venv/bin/activate" ]; then
     source "$SCRIPT_DIR/.venv/bin/activate"
@@ -39,7 +46,7 @@ FRONTEND_PID=$!
 # config points at one fixed port). No hot-reload equivalent — restart
 # dev.sh if you change mcp_server/ code.
 cd "$SCRIPT_DIR"
-ATAT_MCP_TRANSPORT=streamable-http python -m mcp_server.server &
+ATAT_MCP_TRANSPORT=streamable-http python3 -m mcp_server.server &
 MCP_PID=$!
 
 # Trap Ctrl+C to kill all three
