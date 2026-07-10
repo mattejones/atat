@@ -36,8 +36,9 @@ fi
 
 echo ""
 echo "Starting ATAT (production mode)..."
-echo "  Backend:  http://localhost:8000"
-echo "  Frontend: http://localhost:3000"
+echo "  Backend:    http://localhost:8000"
+echo "  Frontend:   http://localhost:3000"
+echo "  MCP server: http://localhost:8765/mcp"
 echo ""
 
 # FastAPI — no --reload in production
@@ -50,6 +51,13 @@ cd "$SCRIPT_DIR/web"
 npm run start &
 FRONTEND_PID=$!
 
-trap "kill $BACKEND_PID $FRONTEND_PID 2>/dev/null; exit" INT TERM
+# MCP server — streamable-http, same port regardless of dev/prod (no dev/prod
+# split concept for MCP the way there is for the web app; an MCP client's
+# config points at one fixed port).
+cd "$SCRIPT_DIR"
+ATAT_MCP_TRANSPORT=streamable-http python -m mcp_server.server &
+MCP_PID=$!
+
+trap "kill $BACKEND_PID $FRONTEND_PID $MCP_PID 2>/dev/null; exit" INT TERM
 
 wait

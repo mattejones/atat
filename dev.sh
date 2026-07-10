@@ -17,8 +17,9 @@ elif [ -f "$SCRIPT_DIR/venv/bin/activate" ]; then
 fi
 
 echo "Starting ATAT (dev mode)..."
-echo "  Backend:  http://localhost:8001"
-echo "  Frontend: http://localhost:3001"
+echo "  Backend:    http://localhost:8001"
+echo "  Frontend:   http://localhost:3001"
+echo "  MCP server: http://localhost:8765/mcp"
 echo ""
 
 # Start FastAPI on dev port with hot reload
@@ -33,7 +34,15 @@ export NEXT_PUBLIC_API_URL=http://localhost:8001
 npm run dev -- -p 3001 &
 FRONTEND_PID=$!
 
-# Trap Ctrl+C to kill both
-trap "kill $BACKEND_PID $FRONTEND_PID 2>/dev/null; exit" INT TERM
+# MCP server — streamable-http, same port regardless of dev/prod (no dev/prod
+# split concept for MCP the way there is for the web app; an MCP client's
+# config points at one fixed port). No hot-reload equivalent — restart
+# dev.sh if you change mcp_server/ code.
+cd "$SCRIPT_DIR"
+ATAT_MCP_TRANSPORT=streamable-http python -m mcp_server.server &
+MCP_PID=$!
+
+# Trap Ctrl+C to kill all three
+trap "kill $BACKEND_PID $FRONTEND_PID $MCP_PID 2>/dev/null; exit" INT TERM
 
 wait

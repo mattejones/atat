@@ -1,5 +1,9 @@
 #!/bin/bash
-# mcp_server_http.sh — Run the ATAT MCP server over streamable-http.
+# mcp_server_http.sh — Run just the ATAT MCP server over streamable-http.
+#
+# start.sh and dev.sh both already start this alongside the web app — use
+# this script instead of those when you want the MCP server running
+# without the web app (e.g. driving ATAT purely through an agent).
 #
 # Only needed for an MCP client that can't spawn a stdio subprocess itself
 # and only supports adding HTTP MCP endpoints (bridged via `npx mcp-remote
