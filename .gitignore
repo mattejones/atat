@@ -17,6 +17,9 @@ data/
 prompts/personal_additions.md
 prompts/cover_letter_personal.md
 
+# Windows launcher - hardcodes this machine's WSL path, not portable
+atat_launch.bat
+
 # Fonts - downloaded locally, not committed
 fonts/
 
