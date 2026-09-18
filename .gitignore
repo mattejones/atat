@@ -47,3 +47,7 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+.claude/
+
+# Logs - generation failure dumps may contain CV and job ad content
+logs/

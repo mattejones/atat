@@ -117,7 +117,12 @@ def _build_contact_line(contact: str) -> str:
         elif 'linkedin' in p.lower():
             url = p if p.startswith('http') else 'https://' + p
             rendered.append(f'#link("{esc_url(url)}")[{esc_display(p)}]')
-        elif re.match(r'^[\w.-]+\.[a-z]{2,}(/\S*)?$', p) and ' ' not in p:
+        elif p.startswith(('http://', 'https://')) or (
+            re.match(r'^[\w.-]+\.[a-z]{2,}(/\S*)?$', p) and ' ' not in p
+        ):
+            # Scheme-qualified URLs (https://mej.xyz) previously fell through to the
+            # plain-text branch below, because the bare-domain regex does not match ':'
+            # or '/'. They rendered as dead text in the PDF. Match them explicitly.
             url = p if p.startswith('http') else 'https://' + p
             rendered.append(f'#link("{esc_url(url)}")[{esc_display(p)}]')
         else:

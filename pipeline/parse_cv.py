@@ -15,6 +15,14 @@ from dataclasses import dataclass
 from typing import Optional
 
 
+# Year range as it appears in education entries.
+# Must tolerate spaced hyphens ("2014 - 2016"), because personal_additions.md
+# instructs the generator to use plain hyphens rather than en/em dashes.
+# The previous pattern (\d{4}[-]?\d{0,4}) had no whitespace allowance and
+# silently truncated "2014 - 2016" to "2014", dropping the end year.
+_YEAR_RANGE = r'\d{4}(?:\s*[-\u2013\u2014]\s*(?:\d{4}|[Pp]resent))?'
+
+
 @dataclass
 class ExperienceEntry:
     company: str
@@ -229,7 +237,7 @@ def parse_cv(markdown: str) -> ParsedCV:
         header = block_lines[0]
 
         # Format A (same line): **Degree** — Institution · Year
-        m = re.match(r'\*\*(.+?)\*\*\s*[—–-]+\s*(.+?)[\s·,]+(\d{4}[–\-]?\d{0,4})', header)
+        m = re.match(rf'\*\*(.+?)\*\*\s*[—–-]+\s*(.+?)[\s·,]+({_YEAR_RANGE})', header)
         if m:
             degree      = m.group(1).strip()
             institution = m.group(2).strip()
@@ -243,16 +251,16 @@ def parse_cv(markdown: str) -> ParsedCV:
             for line in block_lines[1:]:
                 if line.startswith('*') and line.endswith('*'):
                     break  # subjects line
-                inst_m = re.match(r'^(.+?)[\s·\-]+(\d{4}[–\-]?\d{0,4})\s*$', line)
+                inst_m = re.match(rf'^(.+?)[\s·\-]+({_YEAR_RANGE})\s*$', line)
                 if inst_m:
                     institution = inst_m.group(1).strip(' ·')
                     years       = inst_m.group(2).strip()
                     break
                 elif re.search(r'\d{4}', line):
-                    year_m = re.search(r'(\d{4}[–\-]?\d{0,4})', line)
+                    year_m = re.search(rf'({_YEAR_RANGE})', line)
                     if year_m:
                         years       = year_m.group(1)
-                        institution = re.sub(r'[\s·]*\d{4}[–\-]?\d{0,4}', '', line).strip(' ·')
+                        institution = re.sub(rf'[\s·]*{_YEAR_RANGE}', '', line).strip(' ·-')
                     break
 
         # Subjects (italic line)

@@ -134,7 +134,7 @@ def compose_cv_markdown(
 
     Args:
         name:            Full name from cv_data.
-        contact:         Contact dict (email, phone, location, linkedin keys)
+        contact:         Contact dict (email, phone, location, linkedin, website keys)
                          OR a raw pre-formatted contact string. Passing a raw
                          string is used by the accept flow which reconstructs
                          the header from the existing cv_markdown rather than
@@ -153,11 +153,18 @@ def compose_cv_markdown(
         # Raw contact string — passed through as-is (accept flow)
         lines.append(contact)
     else:
+        # NOTE: this list is the ONLY thing that decides what reaches the header.
+        # A contact key absent from it is silently dropped, no matter what the model
+        # emitted or what the library asked for. That is exactly how the personal
+        # website (mej.xyz) went missing from CVs for months despite a standing
+        # "no exceptions" rule: there was no slot for it here, so there was nowhere
+        # for it to land. Add the key here whenever you add one to the schema.
         contact_parts = [
             contact.get("email", ""),
             contact.get("phone", ""),
             contact.get("location", ""),
             contact.get("linkedin", ""),
+            contact.get("website", ""),
         ]
         lines.append(" · ".join(p for p in contact_parts if p))
 
