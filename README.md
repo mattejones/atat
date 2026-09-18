@@ -123,6 +123,22 @@ pip install -r requirements.txt   # includes the `mcp` package
 cp .mcp.json.example .mcp.json    # then add it to your MCP client's config
 ```
 
+### Generation is asynchronous, with an optional review step
+
+Every generative tool — `analyse_job`, `generate_cv`, `run_coverage`,
+`run_judges`, `regenerate_section`, `generate_cover_letter`, `generate_answers`,
+`submit_job` — queues a background job and returns a `job_id` at once, rather
+than holding the call open for the minutes a model call can take. The agent
+carries on and reads the result later with `get_job` (or `wait_for_job`, a
+bounded wait for when there's nothing else to do).
+
+Pass `draft=True` and nothing is sent to a model: the request is saved as a
+draft with its inputs and a preview of the exact prompt (unchanged cv-library
+content elided). Review and edit it on the web UI's **Drafts** page, or through
+the agent with `update_draft` — then `submit_draft`. Jobs live in the
+`generation_jobs` table and run in whichever process accepted them (MCP server
+or API); a job cut off by a restart is marked failed, never silently re-run.
+
 ### Tool groups
 
 - **Applications** — `list_applications`, `get_application`, `get_cv_markdown`,
@@ -134,8 +150,11 @@ cp .mcp.json.example .mcp.json    # then add it to your MCP client's config
   `update_cover_letter`, `render_cover_letter`
 - **Application questions** — `list_questions`, `add_question`,
   `delete_question`, `generate_answers`, `update_answer`, `submit_answer_feedback`
-- **Intake** — `scrape_job_url`, `submit_job`, `find_by_source_url`,
-  `get_recent_notes`
+- **Intake** — `scrape_job_url`, `analyse_job`, `get_jd_spec`, `update_jd_spec`,
+  `generate_cv`, `run_coverage`, `get_coverage`, `find_by_source_url`,
+  `get_recent_notes`, `submit_job` (legacy single-phase)
+- **Jobs** — `get_job`, `list_jobs`, `update_draft`, `submit_draft`,
+  `cancel_job`, `retry_job`, `wait_for_job`
 - **Submission** — `get_application_bundle`, `record_submission`
 - **Insights** — `get_prompt_signals`, `get_exclusion_patterns`,
   `get_success_stats`, `search_applications`, `get_flag_history`,
@@ -151,7 +170,7 @@ update `cv.md` but don't auto-render a new PDF (same as the web UI).
 `list_sections`' `latest_report` field carries the `report_id` every
 generation-pipeline tool needs — `accepted_report_id` is NULL until
 something's actually been accepted, so it's the only way to find a report id
-right after `submit_job`. The cv-library tools expose the *raw, untailored*
+right after `generate_cv`. The cv-library tools expose the *raw, untailored*
 source material (experience entries, personas, skills, contact info) —
 distinct from `get_cv_markdown` (one application's already-tailored output)
 and `get_reference_cvs` (full CV content from applications that actually got
@@ -159,8 +178,8 @@ and `get_reference_cvs` (full CV content from applications that actually got
 outcome strength then recency, not merely applied — real working examples,
 not raw source material).
 `add_personal_rule` is the fix for a *recurring* generation mistake — it's
-appended to `personal_additions.md`, loaded into every future `submit_job`
-call's system prompt, so a correction only has to be made once rather than
+appended to `personal_additions.md`, loaded into every future generation's
+and retry's system prompt, so a correction only has to be made once rather than
 re-typed into `generation_notes` on every CV. `get_guide` (and the
 equivalent `atat://guide` resource, for clients that support MCP resources)
 is a fetchable workflow-sequencing and valid-value glossary that doesn't
@@ -178,7 +197,10 @@ tool (e.g. `claude-in-chrome`), all available to the same session. The agent the
    login wall), falls back to the browser tool to extract the JD manually.
 3. Checks `get_prompt_signals` / `get_success_stats` / `search_applications` for
    relevant history before generating.
-4. Calls `submit_job`, then inspects flags via `get_report` — accepts clean
+4. Calls `analyse_job`, shows you the spec's gaps, then drafts `generate_cv` for
+   your review and submits it once you've approved it. While it runs, the agent
+   moves on to the next task; it picks the result up with `get_job`, then
+   inspects flags via `get_report` — accepts clean
    sections automatically, or leaves the Todoist task open with a comment when
    something needs a human call.
 5. Generates the cover letter and question answers, then calls

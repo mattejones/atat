@@ -6,7 +6,7 @@ to cover_letter.md in the application's output directory.
 
 Endpoints:
   GET    /cover-letter/{app_uuid}           — fetch current state
-  POST   /cover-letter/{app_uuid}/generate  — run two-phase pipeline
+  POST   /cover-letter/{app_uuid}/generate  — queue the two-phase pipeline (job, 202)
   PUT    /cover-letter/{app_uuid}           — save edited markdown (auto-save)
   POST   /cover-letter/{app_uuid}/render    — render cover_letter.md → cover_letter.pdf
   GET    /cover-letter/{app_uuid}/pdf       — serve the rendered PDF
@@ -23,8 +23,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from api.routes.jobs import call
 from db.database import get_db, row_to_dict
-from pipeline.config import LLM_MODEL, OUTPUT_PATH
+from pipeline.config import OUTPUT_PATH
+from pipeline.jobs import service
 
 log = logging.getLogger(__name__)
 
@@ -110,98 +112,21 @@ def get_cover_letter(
     return cl
 
 
-@router.post("/{app_uuid}/generate")
-def generate_cover_letter(
-    app_uuid: str,
-    body:     GenerateRequest,
-    db:       sqlite3.Connection = Depends(get_db),
-):
+@router.post("/{app_uuid}/generate", status_code=202)
+def generate_cover_letter(app_uuid: str, body: GenerateRequest):
     """
-    Run the two-phase cover letter pipeline.
-    Phase 1 (optional): company/role research via web search.
-    Phase 2: LLM generation using CV context, JD, reasoning, and research brief.
+    Queue the two-phase cover letter pipeline (optional company/role research, then
+    generation) as a background job. Returns 202 with the job at once; poll
+    GET /jobs/{job_id} — on success its result is the cover letter record.
     """
-    app    = _get_app_by_uuid(app_uuid, db)
-    app_id = app["id"]
-
-    jd_text     = app.get("jd_text")     or ""
-    cv_markdown = app.get("cv_markdown") or ""
-    reasoning   = app.get("reasoning")
-
-    if not jd_text and not cv_markdown:
-        raise HTTPException(
-            status_code=422,
-            detail="Application has no JD or CV content — cannot generate a cover letter.",
-        )
-
-    from pipeline.cover_letter_generator import generate_cover_letter as _generate
-
-    try:
-        markdown, brief = _generate(
-            company=          app.get("company") or "Unknown",
-            role=             app.get("role")    or "Unknown",
-            jd_text=          jd_text,
-            cv_markdown=      cv_markdown,
-            reasoning=        reasoning,
-            research_company= body.research_company,
-            research_role=    body.research_role,
-            draft_input=      body.draft_input,
-            key_points=       body.key_points,
-        )
-    except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-    now     = datetime.now().isoformat()
-    out_dir = _output_dir(app)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "cover_letter.md").write_text(markdown, encoding="utf-8")
-
-    if brief and brief.combined:
-        (out_dir / "cover_letter_research.md").write_text(
-            brief.combined, encoding="utf-8"
-        )
-
-    cl = _get_or_create_cover_letter(app_id, db)
-    db.execute(
-        """UPDATE cover_letters
-           SET markdown         = ?,
-               status           = 'generated',
-               research_company = ?,
-               research_role    = ?,
-               draft_input      = ?,
-               key_points       = ?,
-               research_brief   = ?,
-               model            = ?,
-               generated_at     = ?,
-               updated_at       = ?
-           WHERE id = ?""",
-        (
-            markdown,
-            int(body.research_company),
-            int(body.research_role),
-            body.draft_input,
-            body.key_points,
-            brief.combined if brief else None,
-            LLM_MODEL,
-            now,
-            now,
-            cl["id"],
-        ),
+    return call(
+        service.create, "generate_cover_letter", app_uuid=app_uuid,
+        params={
+            "research_company": body.research_company, "research_role": body.research_role,
+            "draft_input": body.draft_input, "key_points": body.key_points,
+        },
+        created_by="human",
     )
-
-    db.execute(
-        """INSERT INTO application_events
-           (application_id, event_type, detail)
-           VALUES (?, 'cover_letter_generated', 'Cover letter generated')""",
-        (app_id,),
-    )
-
-    row    = db.execute(
-        "SELECT * FROM cover_letters WHERE id = ?", (cl["id"],)
-    ).fetchone()
-    result = row_to_dict(row)
-    result["has_pdf"] = False
-    return result
 
 
 @router.put("/{app_uuid}")

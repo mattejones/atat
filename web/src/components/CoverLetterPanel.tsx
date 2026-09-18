@@ -3,6 +3,8 @@
 import { useState, useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { useRouter } from "next/navigation";
+import { createDraft, runJob } from "@/lib/jobs";
 
 const API = process.env.NEXT_PUBLIC_API_URL;
 
@@ -39,6 +41,7 @@ function GenerateForm({
   setKeyPoints,
   generating,
   onGenerate,
+  onDraft,
   error,
   compact = false,
 }: {
@@ -52,6 +55,7 @@ function GenerateForm({
   setKeyPoints:       (v: string) => void;
   generating:         boolean;
   onGenerate:         () => void;
+  onDraft:            () => void;
   error:              string | null;
   compact?:           boolean;
 }) {
@@ -150,6 +154,14 @@ function GenerateForm({
             compact ? "Generate new version" : "Generate cover letter"
           )}
         </button>
+        <button
+          onClick={onDraft}
+          disabled={generating}
+          title="Save as a draft to see exactly what will be sent to the model, and edit it, before anything is generated"
+          className="px-4 py-2 text-xs font-medium bg-bg-elevated border border-bg-border text-text-secondary rounded-lg hover:text-text-primary transition-colors disabled:opacity-50"
+        >
+          Review prompt first
+        </button>
         {researchActive && !generating && (
           <span className="text-[10px] text-text-muted">
             Research runs first — may take up to 30s
@@ -163,6 +175,7 @@ function GenerateForm({
 // ── Main panel ────────────────────────────────────────────────────────────────
 
 export default function CoverLetterPanel({ appId }: { appId: string }) {
+  const router                    = useRouter();
   const [cl, setCl]               = useState<CoverLetter | null>(null);
   const [loading, setLoading]     = useState(true);
   const [generating, setGenerating] = useState(false);
@@ -208,25 +221,31 @@ export default function CoverLetterPanel({ appId }: { appId: string }) {
     setKeyPoints(data.key_points ?? "");
   }
 
+  function generationParams() {
+    return {
+      research_company: researchCompany,
+      research_role:    researchRole,
+      draft_input:      draftInput.trim() || null,
+      key_points:       keyPoints.trim()  || null,
+    };
+  }
+
+  async function draft() {
+    setError(null);
+    try {
+      const jobId = await createDraft("generate_cover_letter", { app_uuid: appId }, generationParams());
+      router.push(`/drafts/${jobId}`);
+    } catch (e: any) {
+      setError(e.message);
+    }
+  }
+
   async function generate() {
     setGenerating(true);
     setError(null);
     try {
-      const res = await fetch(`${API}/cover-letter/${appId}/generate`, {
-        method:  "POST",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({
-          research_company: researchCompany,
-          research_role:    researchRole,
-          draft_input:      draftInput.trim() || null,
-          key_points:       keyPoints.trim()  || null,
-        }),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || `Generation failed: ${res.status}`);
-      }
-      const data: CoverLetter = await res.json();
+      // Queued as a background job; runJob follows it until the letter is written.
+      const data: CoverLetter = await runJob(`/cover-letter/${appId}/generate`, generationParams());
       hydrate(data);
       setShowRegenForm(false);
       setView("preview");
@@ -313,6 +332,7 @@ export default function CoverLetterPanel({ appId }: { appId: string }) {
         setKeyPoints={setKeyPoints}
         generating={generating}
         onGenerate={generate}
+        onDraft={draft}
         error={error}
       />
     );
@@ -396,6 +416,7 @@ export default function CoverLetterPanel({ appId }: { appId: string }) {
           setKeyPoints={setKeyPoints}
           generating={generating}
           onGenerate={generate}
+          onDraft={draft}
           error={null}
           compact
         />

@@ -2,6 +2,8 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { api } from "@/lib/api";
+import { waitForJob, type Job } from "@/lib/jobs";
 
 const API = process.env.NEXT_PUBLIC_API_URL;
 
@@ -133,6 +135,7 @@ export default function GeneratePage() {
   const [role, setRole]             = useState("");
   const [notes, setNotes]           = useState("");
   const [generating, setGenerating] = useState(false);
+  const [drafting, setDrafting]     = useState(false);
   const [scraping, setScraping]     = useState(false);
   const [error, setError]           = useState<string | null>(null);
 
@@ -157,6 +160,16 @@ export default function GeneratePage() {
     }
   }
 
+  function request(draft: boolean) {
+    return {
+      jd_text:          jdText,
+      company:          company || "Unknown",
+      role:             role    || "Unknown Role",
+      generation_notes: notes.trim() || null,
+      draft,
+    };
+  }
+
   async function handleGenerate() {
     if (!jdText.trim()) {
       setError("Please add a job description.");
@@ -165,22 +178,29 @@ export default function GeneratePage() {
     setError(null);
     setGenerating(true);
     try {
-      const res = await fetch(`${API}/generate`, {
-        method:  "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          jd_text:          jdText,
-          company:          company || "Unknown",
-          role:             role    || "Unknown Role",
-          generation_notes: notes.trim() || null,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Generation failed");
-      router.push(`/applications/${data.uuid}`);
+      // Returns at once with a job; the CV is generated in the background.
+      const job: Job = await api.post("/generate", request(false));
+      const done     = await waitForJob(job.job_id);
+      router.push(`/applications/${done.result.uuid}`);
     } catch (e: any) {
       setError(e.message);
       setGenerating(false);
+    }
+  }
+
+  async function handleDraft() {
+    if (!jdText.trim()) {
+      setError("Please add a job description.");
+      return;
+    }
+    setError(null);
+    setDrafting(true);
+    try {
+      const job: Job = await api.post("/generate", request(true));
+      router.push(`/drafts/${job.job_id}`);
+    } catch (e: any) {
+      setError(e.message);
+      setDrafting(false);
     }
   }
 
@@ -280,10 +300,17 @@ export default function GeneratePage() {
           </div>
         )}
 
-        <button onClick={handleGenerate} disabled={generating || !jdText.trim()}
-          className="w-full py-3 bg-accent text-white font-medium rounded-lg hover:bg-accent-dim transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-          Generate CV
-        </button>
+        <div className="flex flex-col sm:flex-row gap-2">
+          <button onClick={handleGenerate} disabled={generating || drafting || !jdText.trim()}
+            className="flex-1 py-3 bg-accent text-white font-medium rounded-lg hover:bg-accent-dim transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+            Generate CV
+          </button>
+          <button onClick={handleDraft} disabled={generating || drafting || !jdText.trim()}
+            title="Save the request as a draft and see exactly what will be sent to the model before anything is generated"
+            className="sm:w-56 py-3 bg-bg-elevated border border-bg-border text-text-primary font-medium rounded-lg hover:bg-bg-surface transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+            {drafting ? "Saving draft…" : "Review prompt first"}
+          </button>
+        </div>
       </div>
     </>
   );

@@ -1,8 +1,7 @@
 """
 service.py — create, edit, submit, cancel, and read generation jobs.
 
-This is the whole public surface. The MCP server and (later) the API both call these
-functions; neither talks to the generation_jobs table or the runner directly.
+This is the whole public surface. The MCP server and the API both call these functions; neither talks to the generation_jobs table or the runner directly.
 
 Every function returns a job "view": a plain dict safe to hand straight back to a
 caller. job_id is the reference key.
@@ -19,7 +18,7 @@ from typing import Optional
 
 from db.database import get_connection
 from pipeline.jobs import kinds as _kinds  # noqa: F401 — registers every kind
-from pipeline.jobs.base import JobError, compact_prompt, get_kind, load_context, normalise_params
+from pipeline.jobs.base import REGISTRY, JobError, JobNotFound, compact_prompt, get_kind, load_context, normalise_params
 
 log = logging.getLogger(__name__)
 
@@ -36,13 +35,13 @@ def _now() -> str:
 
 def _row(db: sqlite3.Connection, job_id: str) -> dict:
     row = db.execute(
-        """SELECT j.*, a.uuid AS app_uuid
+        """SELECT j.*, a.uuid AS app_uuid, a.company, a.role
            FROM generation_jobs j LEFT JOIN applications a ON a.id = j.application_id
            WHERE j.id = ?""",
         (job_id,),
     ).fetchone()
     if not row:
-        raise JobError(f"No job found with id={job_id!r}")
+        raise JobNotFound(f"No job found with id={job_id!r}")
     job = dict(row)
     job["params"] = json.loads(job["params"] or "{}")
     return job
@@ -59,13 +58,13 @@ def _resolve_target(db: sqlite3.Connection, target: str, app_uuid: Optional[str]
             raise JobError("app_uuid is required for this job kind.")
         row = db.execute("SELECT id FROM applications WHERE uuid = ?", (app_uuid,)).fetchone()
         if not row:
-            raise JobError(f"No application found with uuid={app_uuid!r}")
+            raise JobNotFound(f"No application found with uuid={app_uuid!r}")
         return row["id"], None
     if not report_id:
         raise JobError("report_id is required for this job kind.")
     row = db.execute("SELECT application_id FROM reports WHERE id = ?", (report_id,)).fetchone()
     if not row:
-        raise JobError(f"No report found with id={report_id!r}")
+        raise JobNotFound(f"No report found with id={report_id!r}")
     return row["application_id"], report_id
 
 
@@ -107,6 +106,8 @@ def _view(job: dict, include_prompt: bool = False) -> dict:
         "kind":             job["kind"],
         "status":           job["status"],
         "app_uuid":         job.get("app_uuid"),
+        "company":          job.get("company"),
+        "role":             job.get("role"),
         "report_id":        job["target_id"],
         "params":           job["params"],
         "version":          job["version"],
@@ -181,7 +182,13 @@ def create(
 
     if draft:
         return get(job_id)
-    return submit(job_id, submitted_by=created_by)
+    try:
+        return submit(job_id, submitted_by=created_by)
+    except JobError:
+        # The caller asked for a job, not a draft: don't leave one behind if it was refused.
+        with get_connection() as db:
+            db.execute("DELETE FROM generation_jobs WHERE id = ? AND status = 'draft'", (job_id,))
+        raise
 
 
 def update_draft(job_id: str, params: dict, expected_version: Optional[int] = None) -> dict:
@@ -326,6 +333,14 @@ def retry(job_id: str, draft: bool = False, created_by: str = "agent") -> dict:
 
 
 # ── Read ──────────────────────────────────────────────────────────────────────
+
+def describe_kinds() -> dict:
+    """Every job kind: what it does, what it targets, and its editable params."""
+    return {
+        name: {"description": k.description, "target": k.target, "params": k.describe_params()}
+        for name, k in sorted(REGISTRY.items()) if not name.startswith("_")
+    }
+
 
 def get(job_id: str, include_prompt: bool = False) -> dict:
     with get_connection() as db:

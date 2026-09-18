@@ -1,9 +1,10 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { api } from "@/lib/api";
+import { createDraft, runJob } from "@/lib/jobs";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -342,6 +343,7 @@ function VersionDropdown({
 
 export default function ReviewPage() {
   const params      = useParams();
+  const router      = useRouter();
   const appId       = params.id as string;
   const sectionName = params.section as string;
 
@@ -396,7 +398,8 @@ export default function ReviewPage() {
     setEvaluating(true);
     setError(null);
     try {
-      await api.post(`/review/${selectedId}/evaluate`);
+      // Queued as a background job; wait for it, then re-read the report's flags.
+      await runJob(`/review/${selectedId}/evaluate`);
       const updated: Report = await api.get(`/review/${selectedId}`);
       setReport(updated);
       setFlags(updated.all_flags ?? []);
@@ -411,7 +414,7 @@ export default function ReviewPage() {
     setRetrying(true);
     setError(null);
     try {
-      const result = await api.post(`/review/${selectedId}/retry`, {
+      const result = await runJob(`/review/${selectedId}/retry`, {
         global_comment: globalComment || null,
       });
       const updated = await api.get(`/sections/${appId}/${sectionName}`);
@@ -422,6 +425,18 @@ export default function ReviewPage() {
       setError(e.message);
     } finally {
       setRetrying(false);
+    }
+  }
+
+  async function handleRetryDraft() {
+    setError(null);
+    try {
+      const jobId = await createDraft(
+        "regenerate_section", { report_id: selectedId }, { global_comment: globalComment || null },
+      );
+      router.push(`/drafts/${jobId}`);
+    } catch (e: any) {
+      setError(e.message);
     }
   }
 
@@ -624,6 +639,14 @@ export default function ReviewPage() {
                 ) : (
                   `↺ Retry with ${activeFlags.length} flag${activeFlags.length !== 1 ? "s" : ""}`
                 )}
+              </button>
+              <button
+                onClick={handleRetryDraft}
+                disabled={retrying || isAccepted || activeFlags.length === 0}
+                title="Save the retry as a draft to see exactly what the model will be told before it runs"
+                className="w-full py-1.5 text-[11px] text-text-muted hover:text-text-primary transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Review retry prompt first
               </button>
 
               <button

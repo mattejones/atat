@@ -29,6 +29,10 @@ class JobError(ValueError):
     """A request that can't be accepted as given: bad params, unmet precondition, wrong status."""
 
 
+class JobNotFound(JobError):
+    """The job, application or report a request names doesn't exist."""
+
+
 class JobCancelled(Exception):
     """Raised by JobHandle.checkpoint() when a cancel was requested while the job ran."""
 
@@ -94,13 +98,13 @@ def load_context(db: sqlite3.Connection, target: str, application_id: Optional[s
     if target == "report":
         row = db.execute("SELECT * FROM reports WHERE id = ?", (target_id,)).fetchone()
         if not row:
-            raise JobError(f"No report found with id={target_id!r}")
+            raise JobNotFound(f"No report found with id={target_id!r}")
         ctx.report = dict(row)
         application_id = ctx.report["application_id"]
     if target in ("application", "report"):
         row = db.execute("SELECT * FROM applications WHERE id = ?", (application_id,)).fetchone()
         if not row:
-            raise JobError(f"No application found for this job (id={application_id!r})")
+            raise JobNotFound(f"No application found for this job (id={application_id!r})")
         ctx.application = dict(row)
     return ctx
 
@@ -203,4 +207,4 @@ def get_kind(name: str) -> JobKind:
     try:
         return REGISTRY[name]
     except KeyError:
-        raise JobError(f"Unknown job kind {name!r}. Valid: {', '.join(sorted(REGISTRY))}")
+        raise JobError(f"Unknown job kind {name!r}. Valid: {', '.join(k for k in sorted(REGISTRY) if not k.startswith('_'))}")
