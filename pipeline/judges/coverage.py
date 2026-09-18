@@ -151,6 +151,19 @@ def _render_spec(spec: dict) -> str:
 
 # ── Public entry point ────────────────────────────────────────────────────────
 
+def build_prompt(cv_markdown: str, spec: dict) -> tuple[str, str]:
+    """Assemble the (system, user) prompt for the coverage judge without calling a model."""
+    system = load_text(PROMPTS_PATH / "judge_coverage.md")
+    user = f"""## JOB SPECIFICATION
+{_render_spec(spec)}
+
+---
+
+## GENERATED CV (assess this against the specification above)
+{cv_markdown}"""
+    return system, user
+
+
 def run(cv_markdown: str, spec: dict) -> CoverageResult:
     """
     Run the Tier 3 coverage judge against the composed CV and a reviewed jd_spec.
@@ -165,15 +178,7 @@ def run(cv_markdown: str, spec: dict) -> CoverageResult:
     if not spec or not spec.get("requirements"):
         raise ValueError("jd_spec is missing or has no requirements — run analyse_job first")
 
-    system = load_text(PROMPTS_PATH / "judge_coverage.md")
-
-    user = f"""## JOB SPECIFICATION
-{_render_spec(spec)}
-
----
-
-## GENERATED CV (assess this against the specification above)
-{cv_markdown}"""
+    system, user = build_prompt(cv_markdown, spec)
 
     if LLM_PROVIDER == "anthropic":
         raw, prompt_tokens, completion_tokens = _call_anthropic(system, user)

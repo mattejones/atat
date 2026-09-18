@@ -1,4 +1,5 @@
 import logging
+import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -6,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from api.routes.applications import router as applications_router
 from api.routes.cover_letter import router as cover_letter_router
 from api.routes.generate import router as generate_router
+from api.routes.jobs import router as jobs_router
 from api.routes.prompts import router as prompts_router
 from api.routes.questions import router as questions_router
 from api.routes.render import router as render_router
@@ -24,9 +26,12 @@ def create_app() -> FastAPI:
         version="0.1.0",
     )
 
+    # ATAT_EXTRA_CORS_ORIGINS (comma-separated) admits another frontend origin — e.g. a
+    # second dev server on a spare port — without editing this list.
+    extra_origins = [o.strip() for o in os.getenv("ATAT_EXTRA_CORS_ORIGINS", "").split(",") if o.strip()]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:18080", "http://localhost:3001"],
+        allow_origins=["http://localhost:18080", "http://localhost:3001", *extra_origins],
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -40,6 +45,15 @@ def create_app() -> FastAPI:
         except Exception as e:
             log.error(f"Migration failed: {e}")
             raise
+
+        # ── Job runner ────────────────────────────────────────────────────────
+        # Started now rather than on first use, so jobs orphaned by a previous run
+        # (killed mid-generation, or queued but never claimed) are recovered at startup.
+        try:
+            from pipeline.jobs.runner import get_runner
+            get_runner()
+        except Exception as e:
+            log.error(f"Job runner startup failed (will retry on first job): {e}")
 
         # ── Scheduler ─────────────────────────────────────────────────────────
         from pipeline.config import AUTO_GHOST_ENABLED, SCHEDULER_INTERVAL_HOURS
@@ -78,6 +92,7 @@ def create_app() -> FastAPI:
     app.include_router(applications_router)
     app.include_router(cover_letter_router)
     app.include_router(generate_router)
+    app.include_router(jobs_router)
     app.include_router(prompts_router)
     app.include_router(questions_router)
     app.include_router(render_router)

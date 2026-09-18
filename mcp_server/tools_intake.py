@@ -7,31 +7,18 @@ agent should fall back to its own browser tool and pass the extracted text
 straight to submit_job — this module deliberately has no browser fallback
 of its own.
 
-submit_job mirrors api/routes/generate.py: runs the tailoring LLM call,
-splits the CV into sections, writes section/report rows, composes cv.md,
-and (if RENDER_PDF) renders the PDF — all in one step, same as the web UI's
-"Generate" button.
+submit_job is the legacy single-phase intake, now run as a background job
+(pipeline/jobs/kinds/intake.py). analyse_job + generate_cv in tools_spec is the
+preferred path.
 """
 
-import json
-import re
-import uuid
-from datetime import date, datetime
 from typing import Optional
 
 from mcp_server.app import mcp
 from mcp_server.helpers import enrich_app, get_connection, row_to_dict
-from pipeline.config import (
-    ENABLE_CACHING, LLM_MODEL, LLM_PROVIDER, OUTPUT_PATH, RENDER_PDF,
-    TEMPERATURE, THINKING_BUDGET,
-)
 
 
 MAX_LIST_LIMIT = 100
-
-
-def _slugify(text: str, max_len: int) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", text.lower())[:max_len].strip("-")
 
 
 @mcp.tool()
@@ -147,123 +134,30 @@ def submit_job(
     source_url: Optional[str] = None,
     tier: Optional[str] = None,
     generation_notes: Optional[str] = None,
+    draft: bool = False,
 ) -> dict:
     """
-    Generate a tailored CV from a job description — creates the application
-    record, calls the tailoring LLM, splits the CV into sections, writes
-    section/report rows for the judge pipeline, composes cv.md, and renders
-    a PDF if RENDER_PDF is enabled.
+    LEGACY single-phase intake — prefer analyse_job then generate_cv, which puts a
+    reviewed brief in front of the generation. This path generates with no jd_spec.
+
+    Creates the application record, calls the tailoring LLM, splits the CV into
+    sections, writes section/report rows for the judge pipeline, composes cv.md, and
+    renders a PDF if RENDER_PDF is enabled.
+
+    ASYNC: returns immediately with a job_id; the result (the new application's uuid,
+    cv_markdown) arrives via get_job. draft=True returns a draft for review instead.
 
     generation_notes: freeform guidance for this generation (e.g. "emphasize
     the platform migration work, downplay people management"). Call
     get_recent_notes() first to see what guidance was used on similar past
     applications before writing this.
-
-    Returns the new application's uuid, cv_markdown, and whether reasoning
-    was captured. Follow up with list_sections/get_report/run_judges to
-    review before accepting, or accept_report per section once satisfied.
     """
-    from mcp_server.helpers import get_connection
-    from pipeline.sections import SECTION_ORDER, compose_cv_markdown, split_cv_sections, write_section_file
-    from pipeline.tailorer import assemble_user_message, build_system_prompt, call_llm
-
-    if not jd_text.strip():
-        raise ValueError("jd_text cannot be empty")
-
-    with get_connection() as db:
-        today = date.today().isoformat()
-        company_slug = _slugify(company, 30)
-        role_slug = _slugify(role, 40)
-        app_id = f"{today}_{company_slug}_{role_slug}"
-        app_uuid = str(uuid.uuid4())
-
-        out_dir = OUTPUT_PATH / app_id
-        if out_dir.exists() or db.execute("SELECT 1 FROM applications WHERE id = ?", (app_id,)).fetchone():
-            suffix = str(uuid.uuid4())[:6]
-            app_id = f"{app_id}_{suffix}"
-            out_dir = OUTPUT_PATH / app_id
-
-        out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / "jd.txt").write_text(jd_text, encoding="utf-8")
-
-        try:
-            system = build_system_prompt()
-            user = assemble_user_message(jd_text, generation_notes)
-            cv_data = call_llm(system, user)
-        except Exception as e:
-            raise ValueError(f"LLM generation failed: {e}")
-
-        reasoning = cv_data.pop("reasoning", "")
-        name = cv_data.get("name", "")
-        contact = cv_data.get("contact", {})
-
-        try:
-            section_content = split_cv_sections(cv_data)
-        except ValueError as e:
-            raise ValueError(f"Section splitting failed: {e}")
-
-        cv_markdown = compose_cv_markdown(name, contact, section_content)
-        (out_dir / "cv.md").write_text(cv_markdown, encoding="utf-8")
-        if reasoning:
-            (out_dir / "reasoning.md").write_text(reasoning, encoding="utf-8")
-
-        meta = {
-            "jd_file": "mcp", "model": LLM_MODEL, "provider": LLM_PROVIDER,
-            "temperature": TEMPERATURE, "thinking_budget": THINKING_BUDGET,
-            "caching": ENABLE_CACHING, "render_pdf": RENDER_PDF,
-            "generated_at": today, "status": "generated", "has_reasoning": bool(reasoning),
-        }
-        (out_dir / "run_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
-
-        now = datetime.now().isoformat()
-        db.execute(
-            """INSERT INTO applications
-               (id, uuid, company, role, source_url, jd_text, cv_markdown,
-                tier, status, output_dir, has_pdf, model, provider,
-                generation_notes, reasoning, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'generated', ?, 0, ?, ?, ?, ?, ?, ?)""",
-            (
-                app_id, app_uuid, company, role, source_url, jd_text, cv_markdown, tier,
-                str(out_dir), LLM_MODEL, LLM_PROVIDER, generation_notes, reasoning or None, now, now,
-            ),
-        )
-        db.execute(
-            """INSERT INTO application_events (application_id, event_type, to_status, detail)
-               VALUES (?, 'status_change', 'generated', 'CV generated and split into sections via MCP')""",
-            (app_id,),
-        )
-
-        for section_name in SECTION_ORDER:
-            content = section_content.get(section_name, "")
-            if not content:
-                continue
-            section_id = str(uuid.uuid4())
-            report_id = str(uuid.uuid4())
-            file_path = write_section_file(out_dir, section_name, report_id, content)
-            db.execute(
-                """INSERT INTO sections (id, application_id, section_name, accepted_report_id, created_at, updated_at)
-                   VALUES (?, ?, ?, NULL, ?, ?)""",
-                (section_id, app_id, section_name, now, now),
-            )
-            db.execute(
-                """INSERT INTO reports
-                   (id, application_id, section_id, parent_report_id, section_name, attempt,
-                    file_path, status, global_comment, formatted_prompt, escalated, created_at)
-                   VALUES (?, ?, ?, NULL, ?, 1, ?, 'pending', NULL, NULL, 0, ?)""",
-                (report_id, app_id, section_id, section_name, str(file_path), now),
-            )
-
-        if RENDER_PDF:
-            try:
-                from pipeline.render import render_cv
-                render_cv(out_dir / "cv.md", out_dir)
-            except Exception:
-                pass  # non-fatal — PDF can be re-rendered later
-
-        return {
-            "uuid": app_uuid,
-            "app_id": app_id,
-            "cv_markdown": cv_markdown,
-            "has_reasoning": bool(reasoning),
-            "status": "generated",
-        }
+    from pipeline.jobs import service
+    return service.create(
+        "submit_job",
+        params={
+            "jd_text": jd_text, "company": company, "role": role, "source_url": source_url,
+            "tier": tier, "generation_notes": generation_notes,
+        },
+        draft=draft,
+    )

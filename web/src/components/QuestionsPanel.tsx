@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import { runJob } from "@/lib/jobs";
 
 const API = process.env.NEXT_PUBLIC_API_URL;
 
@@ -240,11 +241,10 @@ function AnswerCard({
   async function handleRegenerate() {
     setRegen(true);
     try {
-      const res = await fetch(`${API}/questions/${appId}/${question.id}/regenerate`, {
-        method: "POST",
-      });
-      if (res.ok) {
-        const data = await res.json();
+      // Queued as a background job; runJob follows it until the answer is written.
+      const result = await runJob(`/questions/${appId}/${question.id}/regenerate`);
+      const data   = result?.answers?.[0];
+      if (data) {
         onRegenerate({ ...question, effective_answer: data.effective_answer, answer: {
           id: data.answer_id,
           ai_answer: data.ai_answer,
@@ -252,6 +252,8 @@ function AnswerCard({
           created_at: new Date().toISOString(),
         }});
       }
+    } catch {
+      // Failure leaves the existing answer in place, as before.
     } finally {
       setRegen(false);
     }
@@ -520,15 +522,8 @@ export default function QuestionsPanel({
     setGenerating(true);
     setError(null);
     try {
-      const res = await fetch(`${API}/questions/${appId}/generate`, {
-        method:  "POST",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ force: false }),
-      });
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.detail || "Generation failed");
-      }
+      // Queued as a background job; runJob follows it until the answers are written.
+      await runJob(`/questions/${appId}/generate`, { force: false });
       // Reload questions to pick up the new answers
       await loadQuestions();
     } catch (e: any) {

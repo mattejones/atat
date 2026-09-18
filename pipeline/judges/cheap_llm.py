@@ -139,6 +139,19 @@ def _parse_response(raw: str) -> list[dict]:
 
 # ── Public entry point ────────────────────────────────────────────────────────
 
+def build_prompt(section_text: str) -> tuple[str, str]:
+    """Assemble the (system, user) prompt for the accuracy judge without calling a model."""
+    system = load_text(PROMPTS_PATH / "judge_accuracy.md")
+    user = f"""## SOURCE PROFILE MATERIAL
+{_load_source_material()}
+
+---
+
+## GENERATED CV SECTION (check this for accuracy)
+{section_text}"""
+    return system, user
+
+
 def run(section_text: str) -> CheapLLMResult:
     """
     Run the Tier 2 accuracy judge against a raw section text.
@@ -151,16 +164,7 @@ def run(section_text: str) -> CheapLLMResult:
             prompt_tokens=0, completion_tokens=0,
         )
 
-    system          = load_text(PROMPTS_PATH / "judge_accuracy.md")
-    source_material = _load_source_material()
-
-    user_message = f"""## SOURCE PROFILE MATERIAL
-{source_material}
-
----
-
-## GENERATED CV SECTION (check this for accuracy)
-{section_text}"""
+    system, user_message = build_prompt(section_text)
 
     try:
         if LLM_PROVIDER == "anthropic":

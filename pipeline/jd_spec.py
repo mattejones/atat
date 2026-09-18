@@ -420,29 +420,8 @@ def extract_jd_spec(jd_text: str) -> dict:
     # index does not produce a partial answer — it produces a confident wrong one.
     assert_library_addressable()
 
-    index  = build_library_index()
-    system = load_text(PROMPTS_PATH / "jd_spec_extraction.md")
-
-    user = f"""## VALID EVIDENCE REFERENCES
-You may cite ONLY these references, copied exactly. Any other reference is invalid.
-
-{format_library_index(index)}
-
----
-
-## EXPERIENCE LIBRARY (the evidence itself)
-{chr(10).join(load_text(p) for p in sorted(EXPERIENCE_PATH.glob("*.md"), reverse=True))}
-
----
-
-## SKILLS INVENTORY
-{load_text(SKILLS_PATH)}
-
----
-
-## JOB ADVERTISEMENT (the only source of truth for quotes)
-{sanitise_text(jd_text)}
-"""
+    index        = build_library_index()
+    system, user = build_extraction_prompt(jd_text, index)
 
     if LLM_PROVIDER == "anthropic":
         raw = _call_anthropic(system, user)
@@ -473,6 +452,35 @@ You may cite ONLY these references, copied exactly. Any other reference is inval
     )
 
     return spec
+
+
+def build_extraction_prompt(jd_text: str, index: Optional[dict[str, str]] = None) -> tuple[str, str]:
+    """Assemble the (system, user) prompt for spec extraction without calling a model."""
+    if index is None:
+        index = build_library_index()
+    system = load_text(PROMPTS_PATH / "jd_spec_extraction.md")
+
+    user = f"""## VALID EVIDENCE REFERENCES
+You may cite ONLY these references, copied exactly. Any other reference is invalid.
+
+{format_library_index(index)}
+
+---
+
+## EXPERIENCE LIBRARY (the evidence itself)
+{chr(10).join(load_text(p) for p in sorted(EXPERIENCE_PATH.glob("*.md"), reverse=True))}
+
+---
+
+## SKILLS INVENTORY
+{load_text(SKILLS_PATH)}
+
+---
+
+## JOB ADVERTISEMENT (the only source of truth for quotes)
+{sanitise_text(jd_text)}
+"""
+    return system, user
 
 
 # ── Human-readable rendering ──────────────────────────────────────────────────

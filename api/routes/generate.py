@@ -1,43 +1,20 @@
 """
 generate.py — Route for triggering CV generation from a pasted JD.
-Writes to both the database and the filesystem output folder.
 
-call_llm() now returns a structured dict via tool use — no text parsing.
-reasoning is extracted from cv_data['reasoning'] before Markdown conversion.
+Single-phase intake (the submit_job job kind): creates the application, generates the
+CV, splits it into sections and renders the PDF — in the background. Returns 202 with a
+job at once; poll GET /jobs/{job_id}, whose result carries the new application's uuid.
 
-Phase 2 addition: After generation, the CV is split into canonical sections.
-Each section gets a section row and an initial report row in the database.
-Section files are written to output/{app_id}/sections/{section_name}/{report_id}.md
-cv.md is composed from section content via compose_cv_markdown().
+The work itself lives in pipeline/jobs/kinds/intake.py, shared with the MCP server.
 """
 
-import json
-import re
-import sqlite3
-import uuid
-from datetime import date, datetime
-from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter
 from pydantic import BaseModel
 
-from db.database import get_db
-from pipeline.config import (
-    OUTPUT_PATH, LLM_MODEL, LLM_PROVIDER,
-    TEMPERATURE, THINKING_BUDGET, ENABLE_CACHING, RENDER_PDF,
-)
-from pipeline.tailorer import (
-    build_system_prompt,
-    assemble_user_message,
-    call_llm,
-)
-from pipeline.sections import (
-    split_cv_sections,
-    compose_cv_markdown,
-    write_section_file,
-    SECTION_ORDER,
-)
+from api.routes.jobs import call
+from pipeline.jobs import service
 
 router = APIRouter(prefix="/generate", tags=["generate"])
 
@@ -49,149 +26,10 @@ class GenerateRequest(BaseModel):
     source_url:       Optional[str] = None
     tier:             Optional[str] = None
     generation_notes: Optional[str] = None
+    draft:            bool          = False
 
 
-class GenerateResponse(BaseModel):
-    uuid:          str
-    app_id:        str   # retained for backwards compatibility; prefer uuid for routing
-    cv_markdown:   str
-    has_reasoning: bool = False
-    status:        str  = "generated"
-
-
-def _slugify(text: str, max_len: int) -> str:
-    """
-    Convert arbitrary text to a URL-safe slug.
-    Replaces any sequence of non-alphanumeric characters with a single hyphen.
-    This catches spaces, slashes, ampersands, parentheses, and anything else
-    that would break URL routing or filesystem paths.
-    """
-    return re.sub(r'[^a-z0-9]+', '-', text.lower())[:max_len].strip('-')
-
-
-@router.post("", response_model=GenerateResponse)
-def generate_cv(
-    request: GenerateRequest,
-    db: sqlite3.Connection = Depends(get_db),
-):
-    if not request.jd_text.strip():
-        raise HTTPException(status_code=400, detail="JD text cannot be empty")
-
-    today        = date.today().isoformat()
-    company_slug = _slugify(request.company, 30)
-    role_slug    = _slugify(request.role, 40)
-    app_id       = f"{today}_{company_slug}_{role_slug}"
-    app_uuid     = str(uuid.uuid4())
-
-    out_dir = OUTPUT_PATH / app_id
-    if out_dir.exists() or db.execute(
-        "SELECT 1 FROM applications WHERE id = ?", (app_id,)
-    ).fetchone():
-        suffix  = str(uuid.uuid4())[:6]
-        app_id  = f"{app_id}_{suffix}"
-        out_dir = OUTPUT_PATH / app_id
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "jd.txt").write_text(request.jd_text, encoding="utf-8")
-
-    # ── LLM call ──────────────────────────────────────────────────────────────
-    try:
-        system  = build_system_prompt()
-        user    = assemble_user_message(request.jd_text, request.generation_notes)
-        cv_data = call_llm(system, user)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"LLM generation failed: {e}")
-
-    reasoning = cv_data.pop("reasoning", "")
-    name      = cv_data.get("name", "")
-    contact   = cv_data.get("contact", {})
-
-    # ── Section splitting ─────────────────────────────────────────────────────
-    try:
-        section_content = split_cv_sections(cv_data)
-    except ValueError as e:
-        raise HTTPException(status_code=500, detail=f"Section splitting failed: {e}")
-
-    cv_markdown = compose_cv_markdown(name, contact, section_content)
-
-    (out_dir / "cv.md").write_text(cv_markdown, encoding="utf-8")
-    if reasoning:
-        (out_dir / "reasoning.md").write_text(reasoning, encoding="utf-8")
-
-    meta = {
-        "jd_file":         "pasted",
-        "model":           LLM_MODEL,
-        "provider":        LLM_PROVIDER,
-        "temperature":     TEMPERATURE,
-        "thinking_budget": THINKING_BUDGET,
-        "caching":         ENABLE_CACHING,
-        "render_pdf":      RENDER_PDF,
-        "generated_at":    today,
-        "status":          "generated",
-        "has_reasoning":   bool(reasoning),
-    }
-    (out_dir / "run_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
-
-    now = datetime.now().isoformat()
-
-    # ── Insert application row ────────────────────────────────────────────────
-    db.execute(
-        """INSERT INTO applications
-           (id, uuid, company, role, source_url, jd_text, cv_markdown,
-            tier, status, output_dir, has_pdf, model, provider,
-            generation_notes, reasoning, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'generated', ?, 0, ?, ?, ?, ?, ?, ?)""",
-        (
-            app_id, app_uuid, request.company, request.role, request.source_url,
-            request.jd_text, cv_markdown, request.tier,
-            str(out_dir), LLM_MODEL, LLM_PROVIDER,
-            request.generation_notes, reasoning or None, now, now,
-        )
-    )
-    db.execute(
-        """INSERT INTO application_events
-           (application_id, event_type, to_status, detail)
-           VALUES (?, 'status_change', 'generated', 'CV generated and split into sections')""",
-        (app_id,)
-    )
-
-    # ── Write section files and insert section/report rows ────────────────────
-    for section_name in SECTION_ORDER:
-        content = section_content.get(section_name, "")
-        if not content:
-            continue
-
-        section_id = str(uuid.uuid4())
-        report_id  = str(uuid.uuid4())
-
-        file_path = write_section_file(out_dir, section_name, report_id, content)
-
-        db.execute(
-            """INSERT INTO sections
-               (id, application_id, section_name, accepted_report_id, created_at, updated_at)
-               VALUES (?, ?, ?, NULL, ?, ?)""",
-            (section_id, app_id, section_name, now, now),
-        )
-        db.execute(
-            """INSERT INTO reports
-               (id, application_id, section_id, parent_report_id,
-                section_name, attempt, file_path, status,
-                global_comment, formatted_prompt, escalated, created_at)
-               VALUES (?, ?, ?, NULL, ?, 1, ?, 'pending', NULL, NULL, 0, ?)""",
-            (report_id, app_id, section_id, section_name, str(file_path), now),
-        )
-
-    if RENDER_PDF:
-        try:
-            from pipeline.render import render_cv
-            render_cv(out_dir / "cv.md", out_dir)
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).error(f"PDF rendering failed: {e}")
-
-    return GenerateResponse(
-        uuid=app_uuid,
-        app_id=app_id,
-        cv_markdown=cv_markdown,
-        has_reasoning=bool(reasoning),
-    )
+@router.post("", status_code=202)
+def generate_cv(request: GenerateRequest):
+    params = request.model_dump(exclude={"draft"})
+    return call(service.create, "submit_job", params=params, draft=request.draft, created_by="human")

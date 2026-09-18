@@ -10,12 +10,13 @@ Endpoints:
   POST   /questions/{app_uuid}                   — add a question
   PATCH  /questions/{app_uuid}/{q_id}            — update question (text/length/research/order)
   DELETE /questions/{app_uuid}/{q_id}            — remove a question
-  POST   /questions/{app_uuid}/generate          — batch-generate answers
-  POST   /questions/{app_uuid}/{q_id}/regenerate — regenerate a single answer
+  POST   /questions/{app_uuid}/generate          — queue batch answer generation (job, 202)
+  POST   /questions/{app_uuid}/{q_id}/regenerate — queue a single-answer regeneration (job, 202)
   PATCH  /questions/{app_uuid}/{q_id}/answer     — save user-edited answer text
   POST   /questions/{app_uuid}/{q_id}/feedback   — submit feedback (async processing)
 
-Generation:
+Generation runs as a background job (pipeline/jobs/kinds/documents.py); poll
+GET /jobs/{job_id} for the result.
   force=False (default) — only generates answers for questions that have none.
   force=True            — regenerates all questions unconditionally.
   question_ids          — optional list to target specific questions only.
@@ -34,7 +35,9 @@ from typing import Optional
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 
-from db.database import get_db, row_to_dict, rows_to_list
+from api.routes.jobs import call
+from db.database import get_db, row_to_dict
+from pipeline.jobs import service
 
 log = logging.getLogger(__name__)
 
@@ -249,137 +252,32 @@ def delete_question(
     return {"status": "deleted", "id": q_id}
 
 
-@router.post("/{app_uuid}/generate")
-def generate_answers(
-    app_uuid: str,
-    body:     GenerateRequest,
-    db:       sqlite3.Connection = Depends(get_db),
-):
-    app    = _get_app_by_uuid(app_uuid, db)
-    app_id = app["id"]
-
-    rows = db.execute(
-        """SELECT * FROM application_questions
-           WHERE application_id = ?
-           ORDER BY sort_order ASC, created_at ASC""",
-        (app_id,),
-    ).fetchall()
-    all_questions = [row_to_dict(r) for r in rows]
-
-    if not all_questions:
-        return {"generated": 0, "skipped": 0, "answers": []}
-
-    if body.question_ids:
-        id_set        = set(body.question_ids)
-        all_questions = [q for q in all_questions if q["id"] in id_set]
-
-    to_generate: list[dict] = []
-    skipped = 0
-    for q in all_questions:
-        if not body.force and _latest_answer_for_question(q["id"], db) is not None:
-            skipped += 1
-        else:
-            to_generate.append(q)
-
-    if not to_generate:
-        return {"generated": 0, "skipped": skipped, "answers": []}
-
-    jd_text     = app.get("jd_text") or ""
-    cv_markdown = app.get("cv_markdown") or ""
-    notes       = app.get("notes")
-    qa_tone     = app.get("qa_tone") or "professional"
-
-    if not jd_text and not cv_markdown:
-        raise HTTPException(
-            status_code=422,
-            detail="Application has no JD or CV content — cannot generate answers.",
-        )
-
-    from pipeline.question_answerer import generate_answers as _generate
-
-    try:
-        answers_map = _generate(
-            jd_text=jd_text,
-            cv_markdown=cv_markdown,
-            notes=notes,
-            qa_tone=qa_tone,
-            questions=to_generate,
-        )
-    except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-    now   = datetime.now().isoformat()
-    saved: list[dict] = []
-
-    for q in to_generate:
-        answer_text = answers_map.get(q["id"])
-        if not answer_text:
-            log.warning("No answer returned for question %s — skipping insert", q["id"])
-            skipped += 1
-            continue
-
-        answer_id = str(uuid.uuid4())
-        db.execute(
-            """INSERT INTO application_answers
-               (id, question_id, application_id, ai_answer, user_answer, model_used, created_at)
-               VALUES (?, ?, ?, ?, NULL, ?, ?)""",
-            (answer_id, q["id"], app_id, answer_text, "claude-sonnet-4-6", now),
-        )
-        saved.append({
-            "question_id":      q["id"],
-            "answer_id":        answer_id,
-            "ai_answer":        answer_text,
-            "user_answer":      None,
-            "effective_answer": answer_text,
-        })
-
-    return {"generated": len(saved), "skipped": skipped, "answers": saved}
-
-
-@router.post("/{app_uuid}/{q_id}/regenerate")
-def regenerate_answer(
-    app_uuid: str,
-    q_id:     str,
-    db:       sqlite3.Connection = Depends(get_db),
-):
-    app    = _get_app_by_uuid(app_uuid, db)
-    app_id = app["id"]
-    q      = _get_question_or_404(q_id, app_id, db)
-
-    from pipeline.question_answerer import generate_answers as _generate
-
-    try:
-        answers_map = _generate(
-            jd_text=app.get("jd_text") or "",
-            cv_markdown=app.get("cv_markdown") or "",
-            notes=app.get("notes"),
-            qa_tone=app.get("qa_tone") or "professional",
-            questions=[q],
-        )
-    except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-    answer_text = answers_map.get(q_id)
-    if not answer_text:
-        raise HTTPException(status_code=500, detail="Model did not return an answer for this question.")
-
-    answer_id = str(uuid.uuid4())
-    now       = datetime.now().isoformat()
-
-    db.execute(
-        """INSERT INTO application_answers
-           (id, question_id, application_id, ai_answer, user_answer, model_used, created_at)
-           VALUES (?, ?, ?, ?, NULL, ?, ?)""",
-        (answer_id, q_id, app_id, answer_text, "claude-sonnet-4-6", now),
+@router.post("/{app_uuid}/generate", status_code=202)
+def generate_answers(app_uuid: str, body: GenerateRequest):
+    """
+    Queue batch answer generation as a background job. Returns 202 with the job at once;
+    poll GET /jobs/{job_id} — on success its result is {generated, skipped, answers}.
+    """
+    return call(
+        service.create, "generate_answers", app_uuid=app_uuid,
+        params={"force": body.force, "question_ids": body.question_ids},
+        created_by="human",
     )
 
-    return {
-        "question_id":      q_id,
-        "answer_id":        answer_id,
-        "ai_answer":        answer_text,
-        "user_answer":      None,
-        "effective_answer": answer_text,
-    }
+
+@router.post("/{app_uuid}/{q_id}/regenerate", status_code=202)
+def regenerate_answer(app_uuid: str, q_id: str, db: sqlite3.Connection = Depends(get_db)):
+    """
+    Queue a fresh answer for one question (a generate_answers job, forced, for just this
+    question). Returns 202 with the job; its result's answers[0] is the new answer.
+    """
+    app = _get_app_by_uuid(app_uuid, db)
+    _get_question_or_404(q_id, app["id"], db)
+    return call(
+        service.create, "generate_answers", app_uuid=app_uuid,
+        params={"force": True, "question_ids": [q_id]},
+        created_by="human",
+    )
 
 
 @router.patch("/{app_uuid}/{q_id}/answer")
