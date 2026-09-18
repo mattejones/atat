@@ -12,10 +12,55 @@ GUIDE = """\
 ## Identity
 Applications are addressed everywhere by their `uuid` field, never `id`
 (a filesystem slug used internally). Every tool that takes `app_uuid` means
-the `uuid` value from list_applications/get_application/submit_job's response.
+the `uuid` value from list_applications/get_application, or from an
+analyse_job job's result.
+
+## Generative tools return a job_id, not a result
+analyse_job, generate_cv, run_coverage, run_judges, regenerate_section,
+generate_cover_letter, generate_answers and submit_job all queue a background job
+and return at once with `job_id` (the reference key) and `status: "queued"`.
+Model calls take anything from seconds to several minutes; you don't wait on them.
+
+- Carry on with other work, then `get_job(job_id)` when you're ready for the
+  result. `result` is present once `status` is `succeeded`; `error` if `failed`.
+  Don't loop on get_job — each call is a wasted turn if nothing has changed.
+- If there is genuinely nothing else to do, `wait_for_job(job_id, timeout_s)`
+  holds the call open (up to 50s) and returns the moment the job finishes. A
+  timeout loses nothing: the job keeps running, call again.
+- `list_jobs(app_uuid=...)` shows everything queued/run for an application;
+  `list_jobs(status="running")` what's in flight.
+- Only one queued/running job of a kind per target: a second `generate_cv` for
+  the same application is refused with the existing job_id — follow that one.
+- `cancel_job(job_id)` withdraws a queued job. On a running one, the model call
+  finishes (tokens spent) but the output is discarded, not saved.
+- A job that failed or was interrupted (server restarted mid-run) can be re-run
+  with `retry_job(job_id)` — check the application first; an interrupted job may
+  have partially written.
+
+## Drafts: let the applicant review a request before it's sent
+Every generative tool takes `draft=True`. Nothing is sent to a model; you get
+back a job at `status: "draft"` with:
+- `params` — the inputs as they stand (generation notes, key points, retry
+  comment, research toggles, question selection...)
+- `editable_params` — what can be changed, with types and defaults
+- `prompt_preview` — the prompt as it would be sent, with the unchanging
+  cv-library content elided so what's left is what this request actually varies:
+  the ad, the spec, the notes, the flags. (`get_job(job_id, include_prompt=true)`
+  for the system prompt too.)
+
+Show the applicant the params and preview. Apply their changes with
+`update_draft(job_id, params, expected_version)`, then — only once they've said
+go — `submit_draft(job_id, expected_version)`. Passing the `version` they saw
+means an edit made elsewhere (e.g. the web UI) since can't be sent unseen.
+`cancel_job` discards a draft. `list_jobs(status="draft")` is the review queue.
+
+Prefer a draft for anything expensive or judgement-heavy — generate_cv,
+regenerate_section with a comment, generate_cover_letter — or whenever the
+applicant has asked to see requests first. Cheap mechanical runs (run_judges,
+run_coverage) can go straight through.
 
 ## Valid values
-- status: generated | reviewing | applied | acknowledged | interviewing |
+- status: analysed | generated | reviewing | applied | acknowledged | interviewing |
   case_study | offered | rejected | ghosted | excluded | archived
 - tier: T1 | T2 | T3 | EX1
 - work_arrangement: remote | hybrid | office
@@ -23,6 +68,9 @@ the `uuid` value from list_applications/get_application/submit_job's response.
 - flag type: hotword | sentence_length | readability | accuracy | ai_texture
 - report status: pending | accepted | rejected
 - feedback rating: positive | negative
+- job status: draft | queued | running | succeeded | failed | cancelled
+- job kind: analyse_job | submit_job | generate_cv | run_coverage | run_judges |
+  regenerate_section | generate_cover_letter | generate_answers
 
 ## End-to-end workflow (job ad -> submitted application)
 1. `scrape_job_url(url)` — if it errors or the text looks thin (JS-rendered
@@ -48,18 +96,25 @@ the `uuid` value from list_applications/get_application/submit_job's response.
    each time. If it comes back empty for this persona/tier, that's real
    information (no proven-successful example exists yet) — don't silently
    widen to weaker-signal statuses without saying so.
-4. `submit_job(jd_text, company, role, source_url, ...)` — creates the
-   application, generates a CV, splits it into sections, runs the judge
-   pipeline automatically, and renders an initial PDF.
+4. `analyse_job(jd_text, company, role, source_url)` — a job that extracts a
+   structured spec of the ad (requirements, anti-patterns, each quoted verbatim)
+   mapped to library evidence, and creates the application at `analysed`. Its
+   result has the application `uuid` and a `review_markdown` showing the gaps.
+   Put that in front of the applicant; correct it with `update_jd_spec` if needed.
+   Then `generate_cv(app_uuid, generation_notes, draft=True)`, review the draft
+   with the applicant, and `submit_draft`. When it succeeds, `run_coverage(app_uuid)`
+   checks the CV actually answers the ad (read back any time with `get_coverage`).
+   (`submit_job` is the legacy one-shot path with no spec — avoid it.)
 5. `list_sections(app_uuid)` — each section comes back with `latest_report`.
    **`latest_report.id` is the `report_id`** every tool below needs. Don't
    use `accepted_report_id` for this — it's NULL until something's been
-   accepted, so right after submit_job it's `latest_report.id` or nothing.
-   Then per section: `get_report(report_id)` to see judge flags.
+   accepted, so right after generate_cv it's `latest_report.id` or nothing.
+   Then per section: `run_judges(report_id)` (a job), and once it's done
+   `get_report(report_id)` to see judge flags.
    - Clean (zero active flags) -> `accept_report(report_id)`.
    - Flagged -> `regenerate_section(report_id, global_comment?)` to retry
-     against the flags, then re-run `list_sections` (or just note the
-     `new_report_id` regenerate_section returns) to get the new report_id —
+     against the flags (a job; its result carries `new_report_id`, already
+     judged) —
      or leave it and flag the whole application for human review, don't
      guess on subjective accuracy flags.
    - Want the full retry history for a section, not just the latest attempt?
@@ -76,7 +131,7 @@ the `uuid` value from list_applications/get_application/submit_job's response.
 ## Checking for a dupe before generating (the main reason to look at recent applications)
 The whole point of glancing at recent applications is catching something you
 (or a previous, interrupted session) already created for this same job — not
-browsing history for its own sake. Do this every time, before `submit_job`:
+browsing history for its own sake. Do this every time, before `analyse_job`:
 
 1. Got a URL? `find_by_source_url(url)` — exact match, cheapest check, always
    do this first if there's a URL.
@@ -90,7 +145,7 @@ browsing history for its own sake. Do this every time, before `submit_job`:
    obviously show it)? `search_applications(company)` or
    `search_applications(role)` as a fuzzy fallback.
 
-If any of these turn up a match, don't call `submit_job` again — resume
+If any of these turn up a match, don't call `analyse_job` again — resume
 whatever step that application is already at (check its `status` via
 `get_application`).
 
@@ -108,12 +163,11 @@ multiple CVs — a phrase to avoid, a formatting habit, a framing that keeps
 coming out wrong — don't just fix it in this one CV's `generation_notes` and
 move on; that same correction will be needed again next time. Instead call
 `add_personal_rule(rule)` once. It's appended to `personal_additions.md`,
-which is loaded into the system prompt on *every* future `submit_job` call
+which is loaded into the system prompt on *every* future `generate_cv` call
 — a one-time fix instead of a standing chore. `get_personal_additions()`
 shows what's already there (check before adding, to avoid near-duplicate
-rules). Note: this only affects fresh `submit_job` generations, not a
-`regenerate_section` retry already in progress — a different, narrower
-prompt is used for retries.
+rules). The retry prompt used by `regenerate_section` loads it too. It
+applies from the next job that starts — not to one already running.
 
 ## The cv-library — raw source material, not generated output
 `get_cv_markdown(app_uuid)` returns a *tailored, already-generated* CV for

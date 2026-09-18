@@ -99,78 +99,30 @@ def delete_question(app_uuid: str, question_id: str) -> dict:
 
 
 @mcp.tool()
-def generate_answers(app_uuid: str, force: bool = False, question_ids: Optional[list[str]] = None) -> dict:
+def generate_answers(
+    app_uuid: str,
+    force: bool = False,
+    question_ids: Optional[list[str]] = None,
+    draft: bool = False,
+) -> dict:
     """
     Batch-generate answers for an application's questions using its JD, CV,
     notes, and qa_tone.
+
+    ASYNC: returns immediately with a job_id; the answers arrive via get_job (and stay
+    readable with list_questions). draft=True returns a draft for review instead.
 
     force=False (default): only generates for questions with no existing answer.
     force=True: regenerates all targeted questions unconditionally.
     question_ids: optionally restrict to a subset of question ids.
     """
-    with get_connection() as db:
-        app = get_app_by_uuid(app_uuid, db)
-        rows = db.execute(
-            "SELECT * FROM application_questions WHERE application_id = ? ORDER BY sort_order ASC, created_at ASC",
-            (app["id"],),
-        ).fetchall()
-        all_questions = [row_to_dict(r) for r in rows]
-        if not all_questions:
-            return {"generated": 0, "skipped": 0, "answers": []}
-
-        if question_ids:
-            id_set = set(question_ids)
-            all_questions = [q for q in all_questions if q["id"] in id_set]
-
-        to_generate, skipped = [], 0
-        for q in all_questions:
-            if not force and _latest_answer(q["id"], db) is not None:
-                skipped += 1
-            else:
-                to_generate.append(q)
-
-        if not to_generate:
-            return {"generated": 0, "skipped": skipped, "answers": []}
-
-        jd_text = app.get("jd_text") or ""
-        cv_markdown = app.get("cv_markdown") or ""
-        if not jd_text and not cv_markdown:
-            raise ValueError("Application has no JD or CV content — cannot generate answers.")
-
-        from pipeline.question_answerer import generate_answers as _generate
-        try:
-            answers_map = _generate(
-                jd_text=jd_text,
-                cv_markdown=cv_markdown,
-                notes=app.get("notes"),
-                qa_tone=app.get("qa_tone") or "professional",
-                questions=to_generate,
-            )
-        except RuntimeError as e:
-            raise ValueError(str(e))
-
-        import uuid as _uuid
-        from datetime import datetime
-        now = datetime.now().isoformat()
-        saved = []
-        for q in to_generate:
-            answer_text = answers_map.get(q["id"])
-            if not answer_text:
-                skipped += 1
-                continue
-            answer_id = str(_uuid.uuid4())
-            db.execute(
-                """INSERT INTO application_answers
-                   (id, question_id, application_id, ai_answer, user_answer, model_used, created_at)
-                   VALUES (?, ?, ?, ?, NULL, ?, ?)""",
-                (answer_id, q["id"], app["id"], answer_text, "claude-sonnet-4-6", now),
-            )
-            saved.append({
-                "question_id": q["id"], "answer_id": answer_id, "ai_answer": answer_text,
-                "user_answer": None, "effective_answer": answer_text,
-            })
-
-        return {"generated": len(saved), "skipped": skipped, "answers": saved}
+    from pipeline.jobs import service
+    return service.create(
+        "generate_answers",
+        app_uuid=app_uuid,
+        params={"force": force, "question_ids": question_ids},
+        draft=draft,
+    )
 
 
 @mcp.tool()

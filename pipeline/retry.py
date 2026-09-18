@@ -117,18 +117,15 @@ def _call_openai(system: str, user: str) -> tuple[str, int, int]:
 
 # ── Public entry point ────────────────────────────────────────────────────────
 
-def regenerate_section(
+def build_retry_prompt(
     section_name:     str,
     previous_text:    str,
     jd_text:          str,
     active_flags:     list[dict],
     global_comment:   Optional[str] = None,
     generation_notes: Optional[str] = None,
-) -> tuple[str, int, int]:
-    """
-    Regenerate a single CV section with constraint injection.
-    System prompt and section return instructions are loaded from disk.
-    """
+) -> tuple[str, str]:
+    """Assemble the (system, user) prompt for a section retry without calling a model."""
     system              = load_text(PROMPTS_PATH / "retry_system.md")
     additions           = load_personal_additions()
     if additions:
@@ -176,6 +173,24 @@ def regenerate_section(
 ## YOUR TASK
 
 {section_instruction}"""
+    return system, user
+
+
+def regenerate_section(
+    section_name:     str,
+    previous_text:    str,
+    jd_text:          str,
+    active_flags:     list[dict],
+    global_comment:   Optional[str] = None,
+    generation_notes: Optional[str] = None,
+) -> tuple[str, int, int]:
+    """
+    Regenerate a single CV section with constraint injection.
+    System prompt and section return instructions are loaded from disk.
+    """
+    system, user = build_retry_prompt(
+        section_name, previous_text, jd_text, active_flags, global_comment, generation_notes,
+    )
 
     log.info(
         f"Retrying '{section_name}' section — "

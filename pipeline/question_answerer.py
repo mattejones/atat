@@ -222,6 +222,17 @@ def _call_anthropic(
 
 # ── Public entry point ────────────────────────────────────────────────────────
 
+def build_prompt(
+    jd_text:     str,
+    cv_markdown: str,
+    notes:       Optional[str],
+    qa_tone:     str,
+    questions:   list[dict],
+) -> tuple[str, str]:
+    """Assemble the (system, user) prompt for answer generation without calling a model."""
+    return _build_system_prompt(qa_tone), _build_user_message(jd_text, cv_markdown, notes, questions)
+
+
 def generate_answers(
     jd_text:     str,
     cv_markdown: str,

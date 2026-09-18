@@ -23,6 +23,11 @@ each session, not left running like the FastAPI app, and the two can run
 against the same SQLite file (WAL mode) without issue since migrations are
 idempotent.
 
+Generative tools don't block: they queue a background job (pipeline/jobs) and return a
+job_id. Under stdio, the server lives only as long as the client session — a job still
+running when the session ends is cut off and marked failed on the next start. Use
+streamable-http (as start.sh does) for a server that outlives sessions.
+
 Tool modules are imported for their side effects: each decorates functions
 onto the shared `mcp` instance from mcp_server.app.
 """
@@ -37,6 +42,7 @@ import mcp_server.tools_applications  # noqa: F401
 import mcp_server.tools_cover_letter  # noqa: F401
 import mcp_server.tools_insights  # noqa: F401
 import mcp_server.tools_intake  # noqa: F401
+import mcp_server.tools_jobs  # noqa: F401
 import mcp_server.tools_library  # noqa: F401
 import mcp_server.tools_meta  # noqa: F401
 import mcp_server.tools_pipeline  # noqa: F401
@@ -57,6 +63,14 @@ def main() -> None:
         run_migrations()
     except Exception:
         log.exception("Migration failed — starting anyway, some tools may error")
+
+    # Start the job runner now rather than on first use, so jobs orphaned by a previous
+    # run (killed mid-generation, or queued but never claimed) are recovered at startup.
+    try:
+        from pipeline.jobs.runner import get_runner
+        get_runner()
+    except Exception:
+        log.exception("Job runner failed to start — generative tools will start it on first use")
 
     transport = os.getenv("ATAT_MCP_TRANSPORT", "stdio")
     if transport not in ("stdio", "sse", "streamable-http"):

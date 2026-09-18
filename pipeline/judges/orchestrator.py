@@ -115,30 +115,62 @@ def _update_report_escalation(
 
 # ── Public entry point ────────────────────────────────────────────────────────
 
-def run(
-    report_id:    str,
-    section_text: str,
-    attempt:      int,
-    db:           sqlite3.Connection,
-) -> OrchestratorResult:
+@dataclass
+class Evaluation:
+    """Judge outcomes for one section text, computed without touching the database."""
+    section_text: str
+    t1_result:    Optional[deterministic.DeterministicResult] = None
+    t2_result:    Optional[cheap_llm.CheapLLMResult]         = None
+    t2_error:     Optional[str]                               = None
+    empty:        bool                                        = False
+
+
+def evaluate(section_text: str, report_id: str = "") -> Evaluation:
     """
-    Run the full judge pipeline against a section report.
+    Run Tier 1 and Tier 2 against a section text. No database access.
 
-    Persists evaluations and flags to the database, updates the report's
-    escalation state, and returns a structured result.
-
-    Args:
-        report_id:    The report row id being evaluated.
-        section_text: Raw section content — must match the text in the section file
-                      exactly, as all flag positions are relative to this string.
-        attempt:      Current attempt number (1-based). Used for retry threshold.
-        db:           Active SQLite connection. Caller is responsible for commit.
-
-    Returns:
-        OrchestratorResult describing the outcome of all tiers.
+    Split out from persist() so the Tier 2 model call happens with no connection open.
+    run() used to insert the Tier 1 evaluation first and then call the model, holding a
+    SQLite write transaction for the whole call and locking out every other writer.
     """
     if not section_text or not section_text.strip():
         log.warning(f"Orchestrator received empty text for report {report_id} — skipping.")
+        return Evaluation(section_text=section_text, empty=True)
+
+    log.info(f"[{report_id}] Running Tier 1 — deterministic judge")
+    t1_result = deterministic.run(section_text)
+    log.info(
+        f"[{report_id}] Tier 1 complete — "
+        f"passed={t1_result.passed}, flags={len(t1_result.flags)}, "
+        f"flesch={t1_result.flesch_score:.1f}"
+    )
+
+    log.info(f"[{report_id}] Running Tier 2 — cheap LLM accuracy judge")
+    try:
+        t2_result = cheap_llm.run(section_text)
+        log.info(
+            f"[{report_id}] Tier 2 complete — "
+            f"passed={t2_result.passed}, flags={len(t2_result.flags)}"
+        )
+        return Evaluation(section_text=section_text, t1_result=t1_result, t2_result=t2_result)
+    except Exception as e:
+        # Tier 2 failure is non-fatal — log, record as passed with a note,
+        # and continue. A judge error should not block the user's workflow.
+        log.error(f"[{report_id}] Tier 2 judge error (non-fatal): {e}")
+        return Evaluation(section_text=section_text, t1_result=t1_result, t2_error=str(e))
+
+
+def persist(
+    db:         sqlite3.Connection,
+    report_id:  str,
+    attempt:    int,
+    evaluation: Evaluation,
+) -> OrchestratorResult:
+    """
+    Write an Evaluation's rows and flags, decide escalation, and update the report.
+    Caller is responsible for commit.
+    """
+    if evaluation.empty:
         eval_id = _insert_evaluation(db, report_id, "deterministic", passed=True)
         return OrchestratorResult(
             passed=True, escalated=False, escalation_reason=None,
@@ -147,17 +179,16 @@ def run(
             tier2_passed=True, has_accuracy_flags=False,
         )
 
-    # ── Tier 1: Deterministic ─────────────────────────────────────────────────
-    log.info(f"[{report_id}] Running Tier 1 — deterministic judge")
-    t1_result = deterministic.run(section_text)
+    t1_result = evaluation.t1_result
+    t2_result = evaluation.t2_result
 
+    # ── Tier 1 rows ───────────────────────────────────────────────────────────
     tier1_eval_id = _insert_evaluation(
         db, report_id,
         tier="deterministic",
         passed=t1_result.passed,
         flesch_score=t1_result.flesch_score,
     )
-
     for flag in t1_result.flags:
         _insert_flag(
             db, tier1_eval_id,
@@ -168,20 +199,8 @@ def run(
             message=flag.message,
         )
 
-    log.info(
-        f"[{report_id}] Tier 1 complete — "
-        f"passed={t1_result.passed}, flags={len(t1_result.flags)}, "
-        f"flesch={t1_result.flesch_score:.1f}"
-    )
-
-    # ── Tier 2: Cheap LLM accuracy check ─────────────────────────────────────
-    log.info(f"[{report_id}] Running Tier 2 — cheap LLM accuracy judge")
-    tier2_eval_id: Optional[str] = None
-    t2_result     = None
-
-    try:
-        t2_result = cheap_llm.run(section_text)
-
+    # ── Tier 2 rows ───────────────────────────────────────────────────────────
+    if t2_result is not None:
         tier2_eval_id = _insert_evaluation(
             db, report_id,
             tier="cheap_llm",
@@ -190,7 +209,6 @@ def run(
             prompt_tokens=t2_result.prompt_tokens,
             completion_tokens=t2_result.completion_tokens,
         )
-
         for flag in t2_result.flags:
             _insert_flag(
                 db, tier2_eval_id,
@@ -200,16 +218,7 @@ def run(
                 excerpt=flag.excerpt,
                 message=flag.message,
             )
-
-        log.info(
-            f"[{report_id}] Tier 2 complete — "
-            f"passed={t2_result.passed}, flags={len(t2_result.flags)}"
-        )
-
-    except Exception as e:
-        # Tier 2 failure is non-fatal — log, record as passed with a note,
-        # and continue. A judge error should not block the user's workflow.
-        log.error(f"[{report_id}] Tier 2 judge error (non-fatal): {e}")
+    else:
         tier2_eval_id = _insert_evaluation(
             db, report_id,
             tier="cheap_llm",
@@ -261,3 +270,25 @@ def run(
         tier2_passed=tier2_passed,
         has_accuracy_flags=has_accuracy_flags,
     )
+
+
+def run(
+    report_id:    str,
+    section_text: str,
+    attempt:      int,
+    db:           sqlite3.Connection,
+) -> OrchestratorResult:
+    """
+    Run the full judge pipeline against a section report and persist the outcome.
+
+    Equivalent to persist(db, report_id, attempt, evaluate(section_text)). Callers that
+    hold a connection open should prefer calling evaluate() before opening it.
+
+    Args:
+        report_id:    The report row id being evaluated.
+        section_text: Raw section content — must match the text in the section file
+                      exactly, as all flag positions are relative to this string.
+        attempt:      Current attempt number (1-based). Used for retry threshold.
+        db:           Active SQLite connection. Caller is responsible for commit.
+    """
+    return persist(db, report_id, attempt, evaluate(section_text, report_id))

@@ -10,7 +10,7 @@ load-bearing artefact in an otherwise disciplined pipeline.
 
 Two-phase replaces it:
 
-    analyse_job(jd_text)          -> extracts a jd_spec, maps it to library evidence,
+    analyse_job(jd_text)          -> [async job] extracts a jd_spec, maps it to library evidence,
                                      computes a tier from must-have coverage,
                                      saves the application at status 'analysed'.
                                      NO CV IS GENERATED. NO TOKENS ARE SPENT TAILORING.
@@ -18,9 +18,12 @@ Two-phase replaces it:
     [ human reads render_spec_for_review() output and decides ]
 
     update_jd_spec(...)           -> optional: correct the extraction
-    generate_cv(app_uuid)         -> tailors against the reviewed spec, splits sections,
+    generate_cv(app_uuid)         -> [async job] tailors against the reviewed spec, splits sections,
                                      runs tier 0, composes cv.md, renders PDF
-    run_coverage(app_uuid)        -> tier 3: does the CV answer the ad?
+    run_coverage(app_uuid)        -> [async job] tier 3: does the CV answer the ad?
+
+The generative steps run as background jobs (pipeline.jobs): each returns a job_id at
+once, and the result is read back with get_job. The work lives in pipeline/jobs/kinds/.
 
 The point of the split is that the expensive, irreversible step (generation) now happens
 AFTER a human has seen the gaps, not before. On a batch of parked applications this also
@@ -31,21 +34,11 @@ submit_job() is left intact in tools_intake for backward compatibility.
 """
 
 import json
-import re
-import uuid
-from datetime import date, datetime
+from datetime import datetime
 from typing import Optional
 
 from mcp_server.app import mcp
-from mcp_server.helpers import enrich_app, get_connection, row_to_dict
-from pipeline.config import (
-    ENABLE_CACHING, LLM_MODEL, LLM_PROVIDER, OUTPUT_PATH, RENDER_PDF,
-    TEMPERATURE, THINKING_BUDGET,
-)
-
-
-def _slugify(text: str, max_len: int) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", text.lower())[:max_len].strip("-")
+from mcp_server.helpers import get_connection
 
 
 def _load_spec(row) -> Optional[dict]:
@@ -68,16 +61,21 @@ def analyse_job(
     company: str = "Unknown",
     role: str = "Unknown Role",
     source_url: Optional[str] = None,
+    draft: bool = False,
 ) -> dict:
     """
     Phase 1 of two. Extract a structured jd_spec from a job ad and map it against the
     experience library. Creates the application at status 'analysed'. Does NOT generate
     a CV.
 
-    Returns the spec, a computed tier, and a markdown review document. STOP HERE and put
-    the review document in front of the applicant before calling generate_cv. That is the
-    entire point of the two-phase split: the human sees the gaps before a generation is
-    spent, not after.
+    ASYNC: returns immediately with a job_id. When get_job shows it succeeded, the result
+    holds the new application's uuid, the spec's computed tier, its gaps, and a markdown
+    review document. STOP THERE and put the review document in front of the applicant
+    before calling generate_cv. That is the entire point of the two-phase split: the
+    human sees the gaps before a generation is spent, not after.
+
+    draft=True: nothing is sent to a model yet. Returns a draft (inputs + prompt preview)
+    for review; send it with submit_draft.
 
     The spec enforces two invariants, both validated on write:
       - every requirement/anti-pattern quote is VERBATIM from the ad (if it can't be
@@ -89,67 +87,15 @@ def analyse_job(
     useful thing this tool produces. They tell you where the fit genuinely isn't, and
     they drive the computed tier.
 
-    Raises SpecValidationError if the extraction is untrustworthy. It is not repaired
-    silently: a laundered spec looks authoritative and isn't.
+    The job fails (SpecValidationError) if the extraction is untrustworthy. It is not
+    repaired silently: a laundered spec looks authoritative and isn't.
     """
-    from pipeline.jd_spec import extract_jd_spec, render_spec_for_review
-
-    if not jd_text.strip():
-        raise ValueError("jd_text cannot be empty")
-
-    spec = extract_jd_spec(jd_text)
-
-    with get_connection() as db:
-        today        = date.today().isoformat()
-        app_id       = f"{today}_{_slugify(company, 30)}_{_slugify(role, 40)}"
-        app_uuid     = str(uuid.uuid4())
-
-        out_dir = OUTPUT_PATH / app_id
-        if out_dir.exists() or db.execute(
-            "SELECT 1 FROM applications WHERE id = ?", (app_id,)
-        ).fetchone():
-            app_id  = f"{app_id}_{str(uuid.uuid4())[:6]}"
-            out_dir = OUTPUT_PATH / app_id
-
-        out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / "jd.txt").write_text(jd_text, encoding="utf-8")
-        (out_dir / "jd_spec.json").write_text(json.dumps(spec, indent=2), encoding="utf-8")
-        (out_dir / "jd_spec.md").write_text(render_spec_for_review(spec), encoding="utf-8")
-
-        now = datetime.now().isoformat()
-        db.execute(
-            """INSERT INTO applications
-               (id, uuid, company, role, source_url, jd_text, tier, status, output_dir,
-                has_pdf, model, provider, jd_spec, jd_spec_updated_at, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, 'analysed', ?, 0, ?, ?, ?, ?, ?, ?)""",
-            (
-                app_id, app_uuid, company, role, source_url, jd_text,
-                spec["computed_tier"], str(out_dir), LLM_MODEL, LLM_PROVIDER,
-                json.dumps(spec), now, now, now,
-            ),
-        )
-        db.execute(
-            """INSERT INTO application_events (application_id, event_type, to_status, detail)
-               VALUES (?, 'status_change', 'analysed', ?)""",
-            (app_id, f"JD spec extracted, computed tier {spec['computed_tier']}"),
-        )
-
-    stats = spec.get("tier_stats", {})
-    return {
-        "uuid":          app_uuid,
-        "app_id":        app_id,
-        "status":        "analysed",
-        "computed_tier": spec["computed_tier"],
-        "tier_stats":    stats,
-        "requirements":  len(spec["requirements"]),
-        "anti_patterns": len(spec["anti_patterns"]),
-        "gaps":          stats.get("gaps", []),
-        "review_markdown": render_spec_for_review(spec),
-        "next_step": (
-            "Show review_markdown to the applicant. Correct it with update_jd_spec if "
-            "needed. Only then call generate_cv."
-        ),
-    }
+    from pipeline.jobs import service
+    return service.create(
+        "analyse_job",
+        params={"jd_text": jd_text, "company": company, "role": role, "source_url": source_url},
+        draft=draft,
+    )
 
 
 # ── Spec read / edit ──────────────────────────────────────────────────────────
@@ -245,9 +191,16 @@ def update_jd_spec(app_uuid: str, spec: dict) -> dict:
 # ── Phase 2: generate ─────────────────────────────────────────────────────────
 
 @mcp.tool()
-def generate_cv(app_uuid: str, generation_notes: Optional[str] = None) -> dict:
+def generate_cv(app_uuid: str, generation_notes: Optional[str] = None, draft: bool = False) -> dict:
     """
     Phase 2 of two. Generate the CV against a reviewed jd_spec.
+
+    ASYNC: returns immediately with a job_id; the result (cv_markdown, roundtrip
+    outcome) arrives via get_job. Generation takes minutes — do other work meanwhile.
+
+    draft=True: nothing is sent to a model yet. Returns a draft whose prompt_preview shows
+    exactly what the tailoring model will be given (spec, notes, job ad), so the applicant
+    can adjust generation_notes with update_draft before submit_draft sends it.
 
     Requires the application to be at status 'analysed' with a spec present. Refuses to
     run without one — generating against no brief is exactly the failure mode the spec
@@ -263,186 +216,23 @@ def generate_cv(app_uuid: str, generation_notes: Optional[str] = None) -> dict:
 
     Follow with run_coverage() for tier 3, and list_sections/run_judges for tiers 1 and 2.
     """
-    from pathlib import Path
-
-    from pipeline.judges import roundtrip
-    from pipeline.sections import (
-        SECTION_ORDER, compose_cv_markdown, split_cv_sections, write_section_file,
+    from pipeline.jobs import service
+    return service.create(
+        "generate_cv", app_uuid=app_uuid, params={"generation_notes": generation_notes}, draft=draft,
     )
-    from pipeline.tailorer import assemble_user_message, build_system_prompt, call_llm
-
-    with get_connection() as db:
-        row  = _get_app(db, app_uuid)
-        spec = _load_spec(row)
-
-        if not spec:
-            raise ValueError(
-                f"Application {app_uuid} has no jd_spec. Run analyse_job first — "
-                "generating without a reviewed brief is the failure this pipeline exists "
-                "to prevent."
-            )
-        if row["cv_markdown"]:
-            raise ValueError(
-                f"Application {app_uuid} already has a CV. Use regenerate_section to "
-                "revise it, rather than overwriting the whole document."
-            )
-
-        app_id  = row["id"]
-        jd_text = row["jd_text"] or ""
-        out_dir = Path(row["output_dir"])
-        out_dir.mkdir(parents=True, exist_ok=True)
-
-        try:
-            system  = build_system_prompt()
-            user    = assemble_user_message(jd_text, generation_notes, jd_spec=spec)
-            cv_data = call_llm(system, user)
-        except Exception as e:
-            raise ValueError(f"LLM generation failed: {e}")
-
-        reasoning = cv_data.pop("reasoning", "")
-        name      = cv_data.get("name", "")
-        contact   = cv_data.get("contact", {})
-
-        section_content = split_cv_sections(cv_data)
-        cv_markdown     = compose_cv_markdown(name, contact, section_content)
-
-        (out_dir / "cv.md").write_text(cv_markdown, encoding="utf-8")
-        if reasoning:
-            (out_dir / "reasoning.md").write_text(reasoning, encoding="utf-8")
-
-        # ── Tier 0: roundtrip ─────────────────────────────────────────────────
-        rt = roundtrip.run(cv_markdown)
-        now = datetime.now().isoformat()
-
-        db.execute("DELETE FROM roundtrip_failures WHERE application_id = ?", (app_id,))
-        for f in rt.failures:
-            db.execute(
-                """INSERT INTO roundtrip_failures
-                   (id, application_id, field, expected, actual, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (str(uuid.uuid4()), app_id, f.field, f.expected, f.actual, now),
-            )
-
-        (out_dir / "run_meta.json").write_text(json.dumps({
-            "model": LLM_MODEL, "provider": LLM_PROVIDER, "temperature": TEMPERATURE,
-            "thinking_budget": THINKING_BUDGET, "caching": ENABLE_CACHING,
-            "render_pdf": RENDER_PDF, "generated_at": date.today().isoformat(),
-            "status": "generated", "has_reasoning": bool(reasoning),
-            "jd_spec_tier": spec.get("computed_tier"),
-            "roundtrip_passed": rt.passed,
-        }, indent=2), encoding="utf-8")
-
-        db.execute(
-            """UPDATE applications
-               SET cv_markdown = ?, reasoning = ?, generation_notes = ?,
-                   status = 'generated', updated_at = ?
-               WHERE uuid = ?""",
-            (cv_markdown, reasoning or None, generation_notes, now, app_uuid),
-        )
-        db.execute(
-            """INSERT INTO application_events (application_id, event_type, from_status, to_status, detail)
-               VALUES (?, 'status_change', 'analysed', 'generated', ?)""",
-            (app_id, f"CV generated against reviewed jd_spec (tier {spec.get('computed_tier')})"),
-        )
-
-        for section_name in SECTION_ORDER:
-            content = section_content.get(section_name, "")
-            if not content:
-                continue
-            section_id = str(uuid.uuid4())
-            report_id  = str(uuid.uuid4())
-            file_path  = write_section_file(out_dir, section_name, report_id, content)
-            db.execute(
-                """INSERT INTO sections (id, application_id, section_name, accepted_report_id, created_at, updated_at)
-                   VALUES (?, ?, ?, NULL, ?, ?)""",
-                (section_id, app_id, section_name, now, now),
-            )
-            db.execute(
-                """INSERT INTO reports
-                   (id, application_id, section_id, parent_report_id, section_name, attempt,
-                    file_path, status, global_comment, formatted_prompt, escalated, created_at)
-                   VALUES (?, ?, ?, NULL, ?, 1, ?, 'pending', NULL, NULL, 0, ?)""",
-                (report_id, app_id, section_id, section_name, str(file_path), now),
-            )
-
-        if RENDER_PDF and rt.passed:
-            try:
-                from pipeline.render import render_cv
-                render_cv(out_dir / "cv.md", out_dir, company=row["company"] or "")
-                db.execute("UPDATE applications SET has_pdf = 1 WHERE id = ?", (app_id,))
-            except Exception:
-                pass  # non-fatal — re-renderable
-
-    return {
-        "uuid":             app_uuid,
-        "app_id":           app_id,
-        "status":           "generated",
-        "cv_markdown":      cv_markdown,
-        "has_reasoning":    bool(reasoning),
-        "roundtrip_passed": rt.passed,
-        "roundtrip_failures": [
-            {"field": f.field, "expected": f.expected, "actual": f.actual}
-            for f in rt.failures
-        ],
-        "next_step": "Run run_coverage() for tier 3, and run_judges() per section for tiers 1 and 2.",
-    }
 
 
 # ── Tier 3 ────────────────────────────────────────────────────────────────────
-
-def _render_coverage_md(result, spec: dict) -> str:
-    """Render a coverage result as a skimmable markdown review document."""
-    lines = [
-        f"# Coverage review — {'PASS' if result.passed else 'ESCALATED'}",
-        "",
-        f"**{result.summary}**",
-        "",
-        "## Requirements",
-        "",
-    ]
-    must = {r.get("id"): r.get("must_have") for r in spec.get("requirements", [])}
-    mark = {"covered": "OK  ", "partial": "PART", "absent": "GAP "}
-
-    for f in result.findings:
-        if f.kind != "coverage":
-            continue
-        flag = "MUST" if must.get(f.ref_id) else "nice"
-        lines.append(f"- `{mark.get(f.status, '?')}` **{f.ref_id}** [{flag}] {f.quote}")
-        if f.excerpt:
-            lines.append(f"    - CV: {f.excerpt}")
-        if f.reason:
-            lines.append(f"    - {f.reason}")
-    lines.append("")
-
-    violations = [f for f in result.findings if f.kind == "anti_pattern"]
-    lines.append("## Anti-pattern violations")
-    lines.append("")
-    if violations:
-        for f in violations:
-            lines.append(f"- **{f.ref_id}** {f.quote}")
-            if f.excerpt:
-                lines.append(f"    - CV: {f.excerpt}")
-            if f.reason:
-                lines.append(f"    - {f.reason}")
-    else:
-        lines.append("_none_")
-    lines.append("")
-    return "\n".join(lines)
-
 
 @mcp.tool()
 def get_coverage(app_uuid: str) -> dict:
     """
     Read back the most recent tier 3 coverage result, plus any tier 0 roundtrip failures.
 
-    This exists because generate_cv and run_coverage both make frontier/judge calls that
-    routinely exceed the MCP client's response window. The work completes and commits
-    server-side, but the return value is lost. Without a getter, a timeout silently
-    destroys the result of a call that actually succeeded — and the caller cannot tell
-    the difference between "judge found nothing" and "judge's answer never arrived".
-
-    Always call this after a run_coverage or generate_cv timeout rather than re-running.
-    Re-running spends the tokens again to recompute an answer that is already on disk.
+    run_coverage's job result carries the same findings, but this reads whatever is
+    latest on disk at any time — e.g. for an application judged in an earlier session.
+    Read it rather than re-running run_coverage: re-running spends the tokens again to
+    recompute an answer that is already stored.
     """
     with get_connection() as db:
         row = _get_app(db, app_uuid)
@@ -504,10 +294,13 @@ def get_coverage(app_uuid: str) -> dict:
 
 
 @mcp.tool()
-def run_coverage(app_uuid: str) -> dict:
+def run_coverage(app_uuid: str, draft: bool = False) -> dict:
     """
     Tier 3. Judge the generated CV against its reviewed jd_spec: is each requirement
     actually addressed, and does anything trip an anti-pattern the ad stated?
+
+    ASYNC: returns immediately with a job_id; the findings arrive via get_job (and stay
+    readable afterwards with get_coverage). draft=True returns a draft for review instead.
 
     This is the only judge that looks FORWARDS, at the job ad. Tiers 1 and 2 both look
     backwards (prose mechanics; claims against the library), which means a CV can be
@@ -520,74 +313,5 @@ def run_coverage(app_uuid: str) -> dict:
     only produces more confident-sounding evasion. A gap is information about fit, not a
     defect.
     """
-    from pipeline.judges import coverage
-
-    with get_connection() as db:
-        row  = _get_app(db, app_uuid)
-        spec = _load_spec(row)
-        if not spec:
-            raise ValueError(f"Application {app_uuid} has no jd_spec — run analyse_job first.")
-        if not row["cv_markdown"]:
-            raise ValueError(f"Application {app_uuid} has no CV yet — run generate_cv first.")
-
-        result = coverage.run(row["cv_markdown"], spec)
-
-        eval_id = str(uuid.uuid4())
-        now     = datetime.now().isoformat()
-        db.execute(
-            """INSERT INTO coverage_evaluations
-               (id, application_id, passed, covered_count, partial_count, absent_count,
-                violation_count, model, prompt_tokens, completion_tokens, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                eval_id, row["id"], int(result.passed), result.covered_count,
-                result.partial_count, result.absent_count, result.violation_count,
-                result.model, result.prompt_tokens, result.completion_tokens, now,
-            ),
-        )
-        for f in result.findings:
-            db.execute(
-                """INSERT INTO coverage_findings
-                   (id, evaluation_id, kind, ref_id, quote, status, excerpt, reason, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    str(uuid.uuid4()), eval_id, f.kind, f.ref_id, f.quote,
-                    f.status, f.excerpt, f.reason, now,
-                ),
-            )
-
-        # Persist to disk as well as the DB. This call reliably outlives the MCP response
-        # window, so the return value is often never seen. An artefact on disk survives a
-        # timeout; a return value does not.
-        out_dir = row["output_dir"]
-        if out_dir:
-            from pathlib import Path
-            d = Path(out_dir)
-            if d.exists():
-                (d / "coverage.md").write_text(
-                    _render_coverage_md(result, spec), encoding="utf-8"
-                )
-                (d / "coverage.json").write_text(json.dumps({
-                    "passed":  result.passed,
-                    "summary": result.summary,
-                    "findings": [
-                        {"kind": f.kind, "id": f.ref_id, "quote": f.quote,
-                         "status": f.status, "excerpt": f.excerpt, "reason": f.reason}
-                        for f in result.findings
-                    ],
-                }, indent=2), encoding="utf-8")
-
-    return {
-        "uuid":     app_uuid,
-        "passed":   result.passed,
-        "summary":  result.summary,
-        "coverage": [
-            {"id": f.ref_id, "status": f.status, "quote": f.quote,
-             "excerpt": f.excerpt, "reason": f.reason}
-            for f in result.findings if f.kind == "coverage"
-        ],
-        "violations": [
-            {"id": f.ref_id, "quote": f.quote, "excerpt": f.excerpt, "reason": f.reason}
-            for f in result.findings if f.kind == "anti_pattern"
-        ],
-    }
+    from pipeline.jobs import service
+    return service.create("run_coverage", app_uuid=app_uuid, draft=draft)

@@ -130,6 +130,29 @@ def _assemble_user_message(
 
 # ── Public API ─────────────────────────────────────────────────────────────────
 
+def build_generation_prompt(
+    company:     str,
+    role:        str,
+    jd_text:     str,
+    cv_markdown: str,
+    reasoning:   Optional[str] = None,
+    draft_input: Optional[str] = None,
+    key_points:  Optional[str] = None,
+) -> tuple[str, str]:
+    """
+    Assemble the (system, user) generation prompt without calling a model.
+
+    The research brief is absent: it only exists once the research phase has run, so a
+    preview built before generation cannot include it.
+    """
+    system = _load_system_prompt()
+    user   = _assemble_user_message(
+        company=company, role=role, jd_text=jd_text, cv_markdown=cv_markdown,
+        reasoning=reasoning, brief=None, draft_input=draft_input, key_points=key_points,
+    )
+    return system, user
+
+
 def generate_cover_letter(
     company:          str,
     role:             str,
