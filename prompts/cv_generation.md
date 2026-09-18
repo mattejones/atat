@@ -16,7 +16,8 @@ The JSON must follow this exact schema:
     "email": "...",
     "phone": "...",
     "location": "...",
-    "linkedin": "..."
+    "linkedin": "...",
+    "website": "..."
   },
   "profile": "One paragraph, 40-60 words. Addresses narrative gap if present.",
   "experience": [
@@ -51,6 +52,10 @@ The JSON must follow this exact schema:
 
 Required fields: reasoning, name, contact, profile, experience, skills, education, certifications.
 Optional fields: earlier_experience, contact.linkedin, experience[].context, education[].subjects.
+
+`contact.website` is REQUIRED, not optional. Populate it from the Website field in META's
+Contact Information. It renders as the last item on the header contact line. Do not omit it,
+do not fold it into the linkedin field, and do not place it anywhere else in the CV.
 
 ---
 
@@ -219,7 +224,9 @@ WHY: ISO 27001 is not in the candidate's library. The strong version uses what i
 
 WEAK: "Improved team performance and drove better customer outcomes."
 
-STRONG: "Restructured the support enablement function from a reactive content team into a multi-discipline operations unit — a team member was subsequently hired directly by a major enterprise vendor as a Solutions Consultant."
+STRONG: "Restructured the support enablement function from a reactive content team into a multi-discipline operations unit — a team member was subsequently hired directly by Zendesk as a Solutions Consultant."
+
+WHY: Name the real company when the library states it. A specific, verifiable detail is more credible than a vague placeholder — anonymizing a genuine fact makes the claim read as less trustworthy, not more discreet.
 
 ---
 

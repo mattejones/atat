@@ -16,7 +16,7 @@ from pipeline.config import (
     META_PATH, SKILLS_PATH, PROMPTS_PATH,
 )
 from pipeline.tailorer import (
-    load_text, load_experience_files, load_persona_files,
+    load_text, load_experience_files, load_persona_files, load_personal_additions,
 )
 
 log = logging.getLogger(__name__)
@@ -73,14 +73,27 @@ def build_constraint_block(
 
 def _call_anthropic(system: str, user: str) -> tuple[str, int, int]:
     import anthropic
-    client  = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    message = client.messages.create(
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    base_kwargs = dict(
         model=RETRY_MODEL,
         max_tokens=MAX_OUTPUT_TOKENS,
-        temperature=TEMPERATURE,
         system=system,
         messages=[{"role": "user", "content": user}],
     )
+    try:
+        message = client.messages.create(temperature=TEMPERATURE, **base_kwargs)
+    except anthropic.BadRequestError as e:
+        # Some newer models reject an explicit `temperature` value outright
+        # ("temperature is deprecated for this model") rather than just
+        # ignoring it — fall back to the model's default sampling instead
+        # of hard-failing every retry against that model.
+        if "temperature" in str(e).lower() and "deprecated" in str(e).lower():
+            log.warning(
+                f"Model {RETRY_MODEL} does not accept `temperature` — retrying without it."
+            )
+            message = client.messages.create(**base_kwargs)
+        else:
+            raise
     text = "".join(b.text for b in message.content if b.type == "text")
     return text.strip(), message.usage.input_tokens, message.usage.output_tokens
 
@@ -117,6 +130,9 @@ def regenerate_section(
     System prompt and section return instructions are loaded from disk.
     """
     system              = load_text(PROMPTS_PATH / "retry_system.md")
+    additions           = load_personal_additions()
+    if additions:
+        system = f"{system}\n\n---\n\n## PERSONAL ADDITIONS\n\n{additions}"
     section_instruction = _load_section_instruction(section_name)
     constraint_block    = build_constraint_block(active_flags, global_comment)
 

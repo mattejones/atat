@@ -199,13 +199,27 @@ def _call_anthropic(system: str, user: str) -> str:
 
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
-    message = client.messages.create(
+    base_kwargs = dict(
         model=LLM_MODEL,
         max_tokens=MAX_OUTPUT_TOKENS,
-        temperature=TEMPERATURE,
         system=system,
         messages=[{"role": "user", "content": user}],
     )
+
+    try:
+        message = client.messages.create(temperature=TEMPERATURE, **base_kwargs)
+    except anthropic.BadRequestError as e:
+        # Some newer models reject an explicit `temperature` value outright
+        # ("temperature is deprecated for this model") instead of just
+        # ignoring it — fall back to the model's default sampling rather
+        # than hard-failing cover letter generation against that model.
+        if "temperature" in str(e).lower() and "deprecated" in str(e).lower():
+            log.warning(
+                f"Model {LLM_MODEL} does not accept `temperature` — retrying without it."
+            )
+            message = client.messages.create(**base_kwargs)
+        else:
+            raise
 
     log.info(
         "Generation usage — input: %d, output: %d tokens",
