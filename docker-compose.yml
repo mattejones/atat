@@ -15,7 +15,10 @@ name: ${COMPOSE_PROJECT_NAME:-atat}
 
 services:
   api:
-    build: .
+    build:
+      context: .
+      args:
+        BASE_REGISTRY: ${BASE_REGISTRY:-docker.io}
     restart: unless-stopped
     user: "${ATAT_UID:-1000}:${ATAT_GID:-1000}"
     environment:
@@ -40,6 +43,7 @@ services:
       context: ./web
       args:
         API_INTERNAL_URL: http://api:8000
+        BASE_REGISTRY: ${BASE_REGISTRY:-docker.io}
     restart: unless-stopped
     depends_on:
       api:
@@ -55,7 +59,10 @@ services:
   # from another machine over an SSH tunnel or Tailscale, never by opening the port.
   mcp:
     profiles: ["mcp"]
-    build: .
+    build:
+      context: .
+      args:
+        BASE_REGISTRY: ${BASE_REGISTRY:-docker.io}
     restart: unless-stopped
     user: "${ATAT_UID:-1000}:${ATAT_GID:-1000}"
     command: ["python", "-m", "mcp_server.server"]

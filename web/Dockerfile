@@ -4,7 +4,10 @@
 #
 # Next bakes the proxy target in at build time, hence the build arg. docker-compose.yml sets
 # it to the API service name.
-FROM node:20-alpine AS build
+# BASE_REGISTRY=mirror.gcr.io works around a network that can't reach registry-1.docker.io.
+ARG BASE_REGISTRY=docker.io
+
+FROM ${BASE_REGISTRY}/library/node:20-alpine AS build
 WORKDIR /web
 
 COPY package.json package-lock.json ./
@@ -19,7 +22,7 @@ ENV API_INTERNAL_URL=${API_INTERNAL_URL} \
 RUN npm run build
 
 
-FROM node:20-alpine
+FROM ${BASE_REGISTRY}/library/node:20-alpine
 WORKDIR /web
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1

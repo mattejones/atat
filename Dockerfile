@@ -6,7 +6,10 @@
 # personal prompt files, the Gmail token, .env — lives in the mounted instance directory
 # (ATAT_HOME=/data), the CV library is mounted at /cv-library and the Poppins fonts at
 # /fonts. Nothing about a person is ever baked into the image (see .dockerignore).
-FROM python:3.11-slim
+# Where the base image comes from. Override with BASE_REGISTRY=mirror.gcr.io (Google's Docker Hub
+# mirror) on a network that can't reach registry-1.docker.io directly.
+ARG BASE_REGISTRY=docker.io
+FROM ${BASE_REGISTRY}/library/python:3.11-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
