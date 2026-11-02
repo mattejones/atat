@@ -40,6 +40,7 @@ from mcp_server.app import mcp
 # noqa: F401 — imported for @mcp.tool() registration side effects
 import mcp_server.tools_applications  # noqa: F401
 import mcp_server.tools_cover_letter  # noqa: F401
+import mcp_server.tools_email  # noqa: F401
 import mcp_server.tools_insights  # noqa: F401
 import mcp_server.tools_intake  # noqa: F401
 import mcp_server.tools_jobs  # noqa: F401

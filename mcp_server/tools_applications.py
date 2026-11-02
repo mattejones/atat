@@ -18,11 +18,8 @@ from mcp_server.helpers import (
     rows_to_list,
 )
 
-VALID_STATUSES = {
-    "generated", "reviewing", "applied", "acknowledged",
-    "interviewing", "case_study", "offered",
-    "rejected", "ghosted", "excluded", "archived",
-}
+from pipeline.statuses import VALID_STATUSES  # shared with the API
+
 VALID_TIERS = {"T1", "T2", "T3", "EX1"}
 VALID_ARRANGEMENTS = {"remote", "hybrid", "office"}
 
@@ -95,10 +92,21 @@ def list_applications(
 
 @mcp.tool()
 def get_application(app_uuid: str) -> dict:
-    """Get full detail for a single application, addressed by its uuid."""
+    """
+    Get full detail for a single application, addressed by its uuid.
+
+    Includes `outcome`: what actually happened, derived from accepted emails and status
+    history (see get_outcomes) — use it rather than `status` to judge how it went.
+    """
+    from pipeline.insights.outcomes import outcome_for
+
     with get_connection() as db:
-        app = get_app_by_uuid(app_uuid, db)
-        return enrich_app(app)
+        app = enrich_app(get_app_by_uuid(app_uuid, db))
+        app["outcome"] = outcome_for(db, app_uuid)
+        if app["outcome"]:
+            from pipeline.insights.forecast import score_for
+            app["outcome"]["score"] = score_for(db, app_uuid)
+        return app
 
 
 @mcp.tool()
@@ -218,16 +226,22 @@ def update_application(
     salary_min: Optional[int] = None,
     salary_max: Optional[int] = None,
     salary_currency: Optional[str] = None,
+    outside_inbox: Optional[bool] = None,
 ) -> dict:
     """
     Update fields on an application. Only arguments you pass are changed.
+
+    outside_inbox: true when the application went through a channel the synced Gmail
+    inbox doesn't see (LinkedIn Easy Apply, an agency, another address). Outcome
+    reports then exclude it, since its email history is incomplete.
 
     Status changes are logged as application_events automatically, and moving
     to 'applied' backfills today's applied date if none is logged yet.
 
     tier: T1 | T2 | T3 | EX1
-    status: generated | reviewing | applied | acknowledged | interviewing |
+    status: analysed | generated | reviewing | applied | acknowledged | interviewing |
             case_study | offered | rejected | ghosted | excluded | archived
+            (any open status can move straight to rejected, ghosted or archived)
     work_arrangement: remote | hybrid | office
     """
     updates = {
@@ -236,7 +250,7 @@ def update_application(
             "status": status, "notes": notes, "location": location,
             "work_arrangement": work_arrangement, "hybrid_days": hybrid_days,
             "salary_min": salary_min, "salary_max": salary_max,
-            "salary_currency": salary_currency,
+            "salary_currency": salary_currency, "outside_inbox": outside_inbox,
         }.items() if v is not None
     }
     if "status" in updates and updates["status"] not in VALID_STATUSES:

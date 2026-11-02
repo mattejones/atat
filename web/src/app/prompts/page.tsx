@@ -3,7 +3,8 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 
-const API = process.env.NEXT_PUBLIC_API_URL;
+import { api } from "@/lib/api";
+const API = api.url;
 
 interface PromptMeta {
   slug:        string;

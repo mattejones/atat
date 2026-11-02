@@ -5,53 +5,32 @@ import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import { waitForJob, type Job } from "@/lib/jobs";
 
-const API = process.env.NEXT_PUBLIC_API_URL;
+const API = api.url;
 
 type InputMode = "paste" | "url";
 
-const LOADING_MESSAGES = [
-  "Reading the job description…",
-  "Auditing your experience library…",
-  "Selecting the best persona…",
-  "Grounding every claim in your history…",
-  "Running anti-hallucination checks…",
-  "Calibrating tone and register…",
-  "Writing your tailored CV…",
-  "Checking for forbidden words…",
-  "Actually hallucinating (don't worry, we caught it)…",
-  "Applying on your behalf without consent…",
-  "Submitting Elon Musk's CV by mistake…",
-  "Contemplating the meaning of work…",
-  "Wondering if you really want this job…",
-  "Briefly considering a career in goat farming…",
-  "Reading your entire LinkedIn history and judging you…",
-  "Asking the other AI for a second opinion…",
-  "Suppressing the urge to add 'rockstar' to your title…",
-  "Removing seventeen uses of the word 'leverage'…",
-  "Debating whether Java counts as a personality…",
-  "Googling what CCaaS means (just kidding, we know)…",
-  "Checking if Salesforce is still a thing…",
-  "Pretending to read the job description a second time…",
-  "Quietly judging the company's Glassdoor rating…",
-  "Negotiating salary on your behalf (going great)…",
-  "Adding 'visionary' then immediately removing it…",
-  "Making you sound impressive without lying (hardest part)…",
-  "Cross-referencing with parallel universe where you got the last job…",
+// The stages of a generation, in order. The server doesn't report which one it is on, so
+// these advance on a timer and settle on the last one rather than looping.
+const STEPS = [
+  "Reading the job ad…",
+  "Choosing the most relevant experience…",
+  "Writing your CV…",
+  "Checking the wording and facts…",
+  "Nearly there — still working…",
 ];
 
 function GeneratingOverlay({ company, role }: { company: string; role: string }) {
   const [tick, setTick] = useState(0);
-  const [startIdx]      = useState(() => Math.floor(Math.random() * LOADING_MESSAGES.length));
 
   useEffect(() => {
-    const interval = setInterval(() => setTick((t) => t + 1), 5000);
+    const interval = setInterval(() => setTick((t) => t + 1), 12000);
     return () => clearInterval(interval);
   }, []);
 
-  const message = LOADING_MESSAGES[(startIdx + tick) % LOADING_MESSAGES.length];
+  const message = STEPS[Math.min(tick, STEPS.length - 1)];
 
   return (
-    <div className="fixed inset-0 bg-bg-base/95 backdrop-blur-sm z-50 flex flex-col items-center justify-center gap-8">
+    <div className="fixed inset-0 bg-bg-base/95 backdrop-blur-sm z-50 flex flex-col items-center justify-center gap-8 px-6">
       <div className="relative">
         <div className="w-16 h-16 rounded-full border-4 border-bg-border border-t-accent animate-spin" />
         <div className="absolute inset-0 flex items-center justify-center">
@@ -69,8 +48,9 @@ function GeneratingOverlay({ company, role }: { company: string; role: string })
         )}
         <p key={tick} className="text-sm text-text-muted mt-4 animate-fade-in">{message}</p>
       </div>
-      <p className="text-xs text-text-muted">
-        This usually takes 30–60 seconds with extended thinking enabled.
+      <p className="text-xs text-text-muted text-center max-w-xs">
+        This usually takes about a minute. You can leave this page — it will still finish and
+        appear in Applications.
       </p>
     </div>
   );
@@ -128,7 +108,8 @@ function PreviousNotes({ onSelect }: { onSelect: (text: string) => void }) {
 export default function GeneratePage() {
   const router = useRouter();
 
-  const [mode, setMode]             = useState<InputMode>("paste");
+  // A link is the easy thing to bring from a phone, so start there.
+  const [mode, setMode]             = useState<InputMode>("url");
   const [jdText, setJdText]         = useState("");
   const [url, setUrl]               = useState("");
   const [company, setCompany]       = useState("");
@@ -139,12 +120,24 @@ export default function GeneratePage() {
   const [scraping, setScraping]     = useState(false);
   const [error, setError]           = useState<string | null>(null);
 
-  async function fetchFromUrl() {
-    if (!url.trim()) return;
+  // Opened from the phone's Share sheet (see app/manifest.ts): the link arrives as ?url=,
+  // or inside ?text= (Android puts it there). Fetch the ad straight away.
+  useEffect(() => {
+    const p = new URLSearchParams(window.location.search);
+    const shared = p.get("url") || (p.get("text") ?? "").match(/https?:\/\/\S+/)?.[0];
+    if (!shared) return;
+    setUrl(shared);
+    setMode("url");
+    fetchFromUrl(shared);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function fetchFromUrl(target: string = url) {
+    if (!target.trim()) return;
     setScraping(true);
     setError(null);
     try {
-      const res  = await fetch(`${API}/scrape?url=${encodeURIComponent(url.trim())}`);
+      const res  = await fetch(`${API}/scrape?url=${encodeURIComponent(target.trim())}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Scrape failed");
       setJdText(data.text);
@@ -216,48 +209,51 @@ export default function GeneratePage() {
           </p>
         </div>
 
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div className="space-y-1">
             <label className="text-xs font-medium text-text-secondary uppercase tracking-wide">Company</label>
             <input type="text" value={company} onChange={(e) => setCompany(e.target.value)}
               placeholder="e.g. Stripe" disabled={generating}
-              className="w-full px-3 py-2 bg-bg-elevated border border-bg-border rounded-lg text-sm text-text-primary placeholder-text-muted focus:outline-none focus:ring-2 focus:ring-accent/40 disabled:opacity-50" />
+              className="w-full px-3 py-2 min-h-11 bg-bg-elevated border border-bg-border rounded-lg text-base sm:text-sm text-text-primary placeholder-text-muted focus:outline-none focus:ring-2 focus:ring-accent/40 disabled:opacity-50" />
           </div>
           <div className="space-y-1">
             <label className="text-xs font-medium text-text-secondary uppercase tracking-wide">Role title</label>
             <input type="text" value={role} onChange={(e) => setRole(e.target.value)}
               placeholder="e.g. RevOps Manager" disabled={generating}
-              className="w-full px-3 py-2 bg-bg-elevated border border-bg-border rounded-lg text-sm text-text-primary placeholder-text-muted focus:outline-none focus:ring-2 focus:ring-accent/40 disabled:opacity-50" />
+              className="w-full px-3 py-2 min-h-11 bg-bg-elevated border border-bg-border rounded-lg text-base sm:text-sm text-text-primary placeholder-text-muted focus:outline-none focus:ring-2 focus:ring-accent/40 disabled:opacity-50" />
           </div>
         </div>
 
         <div className="space-y-3">
           <div className="flex gap-1 bg-bg-surface rounded-lg p-1 w-fit border border-bg-border">
-            {(["paste", "url"] as InputMode[]).map((m) => (
+            {(["url", "paste"] as InputMode[]).map((m) => (
               <button key={m} onClick={() => setMode(m)} disabled={generating}
-                className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
+                className={`min-h-11 sm:min-h-0 px-4 sm:px-3 py-1 text-xs font-medium rounded-md transition-colors ${
                   mode === m ? "bg-white text-text-primary shadow-sm" : "text-text-secondary hover:text-text-primary"
                 }`}>
-                {m === "paste" ? "Paste JD" : "From URL"}
+                {m === "paste" ? "Paste text" : "From a link"}
               </button>
             ))}
           </div>
 
           {mode === "url" && (
             <div className="space-y-2">
-              <div className="flex gap-2">
+              <div className="flex flex-col sm:flex-row gap-2">
                 <input type="url" value={url} onChange={(e) => setUrl(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && fetchFromUrl()}
                   placeholder="https://company.com/jobs/role" disabled={generating}
-                  className="flex-1 px-3 py-2 bg-bg-elevated border border-bg-border rounded-lg text-sm text-text-primary placeholder-text-muted focus:outline-none focus:ring-2 focus:ring-accent/40" />
-                <button onClick={fetchFromUrl} disabled={scraping || !url.trim() || generating}
-                  className="px-4 py-2 bg-accent text-white text-sm font-medium rounded-lg hover:bg-accent-dim transition-colors disabled:opacity-50 flex items-center gap-2">
+                  className="flex-1 px-3 py-2 min-h-11 bg-bg-elevated border border-bg-border rounded-lg text-base sm:text-sm text-text-primary placeholder-text-muted focus:outline-none focus:ring-2 focus:ring-accent/40" />
+                <button onClick={() => fetchFromUrl()} disabled={scraping || !url.trim() || generating}
+                  className="min-h-11 justify-center px-4 py-2 bg-accent text-white text-sm font-medium rounded-lg hover:bg-accent-dim transition-colors disabled:opacity-50 flex items-center gap-2">
                   {scraping
                     ? <><span className="w-3 h-3 border border-white/30 border-t-white rounded-full animate-spin" />Fetching…</>
                     : "Fetch"}
                 </button>
               </div>
-              <p className="text-xs text-text-muted">Works best with direct job posting URLs. LinkedIn may block access.</p>
+              <p className="text-xs text-text-muted">
+                Works best with a direct link to the job posting. If a site blocks it (LinkedIn often
+                does), switch to "Paste text" and paste the ad instead.
+              </p>
             </div>
           )}
 
@@ -272,7 +268,7 @@ export default function GeneratePage() {
               </div>
               <textarea value={jdText} onChange={(e) => setJdText(e.target.value)}
                 placeholder="Paste the full job description here…" rows={16} disabled={generating}
-                className="w-full px-3 py-2 bg-bg-elevated border border-bg-border rounded-lg text-sm text-text-primary placeholder-text-muted focus:outline-none focus:ring-2 focus:ring-accent/40 resize-y font-mono leading-relaxed disabled:opacity-50" />
+                className="w-full px-3 py-2 min-h-11 bg-bg-elevated border border-bg-border rounded-lg text-base sm:text-sm text-text-primary placeholder-text-muted focus:outline-none focus:ring-2 focus:ring-accent/40 resize-y font-mono leading-relaxed disabled:opacity-50" />
               <p className="text-xs text-text-muted">
                 {jdText.length > 0 ? `${jdText.length.toLocaleString()} characters` : ""}
               </p>
@@ -289,7 +285,7 @@ export default function GeneratePage() {
             <textarea value={notes} onChange={(e) => setNotes(e.target.value)}
               placeholder={`e.g. "This role clearly values n8n experience — highlight integration work across the library."`}
               rows={3} disabled={generating}
-              className="w-full px-3 py-2 bg-bg-elevated border border-bg-border rounded-lg text-sm text-text-primary placeholder-text-muted focus:outline-none focus:ring-2 focus:ring-accent/40 resize-y leading-relaxed disabled:opacity-50" />
+              className="w-full px-3 py-2 min-h-11 bg-bg-elevated border border-bg-border rounded-lg text-base sm:text-sm text-text-primary placeholder-text-muted focus:outline-none focus:ring-2 focus:ring-accent/40 resize-y leading-relaxed disabled:opacity-50" />
           </div>
           <PreviousNotes onSelect={setNotes} />
         </div>
@@ -300,15 +296,16 @@ export default function GeneratePage() {
           </div>
         )}
 
-        <div className="flex flex-col sm:flex-row gap-2">
+        <div className="flex flex-col items-stretch gap-1">
           <button onClick={handleGenerate} disabled={generating || drafting || !jdText.trim()}
-            className="flex-1 py-3 bg-accent text-white font-medium rounded-lg hover:bg-accent-dim transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+            className="min-h-12 py-3 bg-accent text-white font-medium rounded-lg hover:bg-accent-dim transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
             Generate CV
           </button>
+          {/* The review-the-prompt flow is for tinkering, so it is a quiet secondary action */}
           <button onClick={handleDraft} disabled={generating || drafting || !jdText.trim()}
-            title="Save the request as a draft and see exactly what will be sent to the model before anything is generated"
-            className="sm:w-56 py-3 bg-bg-elevated border border-bg-border text-text-primary font-medium rounded-lg hover:bg-bg-surface transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-            {drafting ? "Saving draft…" : "Review prompt first"}
+            title="Save the request as a draft and see exactly what will be sent to the AI before anything is generated"
+            className="min-h-11 text-sm text-text-muted hover:text-text-primary underline-offset-2 hover:underline disabled:opacity-50 disabled:cursor-not-allowed">
+            {drafting ? "Saving draft…" : "Check the request before sending"}
           </button>
         </div>
       </div>

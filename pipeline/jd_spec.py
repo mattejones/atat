@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Optional
 
 from pipeline.config import (
-    REPO_ROOT,
+    LOGS_PATH,
     EXPERIENCE_PATH, PERSONAS_PATH, SKILLS_PATH, META_PATH, PROMPTS_PATH,
     LLM_PROVIDER, LLM_MODEL, ANTHROPIC_API_KEY, OPENAI_API_KEY,
     TEMPERATURE, MAX_OUTPUT_TOKENS,
@@ -322,7 +322,7 @@ def spec_to_prompt_block(spec: dict) -> str:
 
 # ── LLM call ──────────────────────────────────────────────────────────────────
 
-LOG_DIR = REPO_ROOT / "logs" / "jd_spec_failures"
+LOG_DIR = LOGS_PATH / "jd_spec_failures"
 
 
 def _log_extraction_failure(raw: str, error: str) -> Path:

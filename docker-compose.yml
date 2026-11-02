@@ -1,0 +1,75 @@
+# ATAT on a home server — one stack per person.
+#
+#   docker compose --env-file instances/kerri/compose.env -p atat-kerri up -d --build
+#
+# Each person gets their own instance directory (instances/<name>/, see instances/example/)
+# holding their .env, database, generated CVs, logs and personal prompts, plus their own CV
+# library. Stacks are fully independent: separate data, separate port, separate password.
+#
+# Only the web container publishes a port, bound to localhost by default. Put Tailscale,
+# Cloudflare Access or a reverse proxy with HTTPS in front of it — see README "Deploying".
+#
+# Run exactly one `api` per instance: the job runner and schedulers live inside it.
+
+name: ${COMPOSE_PROJECT_NAME:-atat}
+
+services:
+  api:
+    build: .
+    restart: unless-stopped
+    user: "${ATAT_UID:-1000}:${ATAT_GID:-1000}"
+    environment:
+      # ATAT_HOME=/data is set in the image; the instance's .env (inside it) holds the
+      # API key, ATAT_PASSWORD and the rest of this person's settings.
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ${ATAT_INSTANCE_DIR:?set ATAT_INSTANCE_DIR in compose.env}:/data
+      - ${CV_LIBRARY_DIR:?set CV_LIBRARY_DIR in compose.env}:/cv-library
+      - ${FONTS_DIR:-./fonts}:/fonts:ro
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+  web:
+    build:
+      context: ./web
+      args:
+        API_INTERNAL_URL: http://api:8000
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      # Localhost only by default. WEB_BIND=0.0.0.0 exposes it to your LAN — only do that
+      # with ATAT_PASSWORD set, and prefer a proxy with HTTPS.
+      - "${WEB_BIND:-127.0.0.1}:${WEB_PORT:-18080}:18080"
+
+  # Optional: the MCP server, for driving ATAT from an AI agent (Claude Desktop/Code).
+  #   docker compose ... --profile mcp up -d
+  # It has no authentication of its own, so it is published on localhost only. Reach it
+  # from another machine over an SSH tunnel or Tailscale, never by opening the port.
+  mcp:
+    profiles: ["mcp"]
+    build: .
+    restart: unless-stopped
+    user: "${ATAT_UID:-1000}:${ATAT_GID:-1000}"
+    command: ["python", "-m", "mcp_server.server"]
+    environment:
+      TZ: ${TZ:-UTC}
+      ATAT_MCP_TRANSPORT: streamable-http
+      ATAT_MCP_HOST: 0.0.0.0        # inside the container only; the host side is 127.0.0.1
+      ATAT_MCP_PORT: "8765"
+    volumes:
+      - ${ATAT_INSTANCE_DIR}:/data
+      - ${CV_LIBRARY_DIR}:/cv-library
+      - ${FONTS_DIR:-./fonts}:/fonts:ro
+    ports:
+      - "127.0.0.1:${MCP_PORT:-8765}:8765"
+    depends_on:
+      api:
+        condition: service_healthy

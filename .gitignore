@@ -51,3 +51,8 @@ Thumbs.db
 
 # Logs - generation failure dumps may contain CV and job ad content
 logs/
+
+# Per-person deployment instances — .env, data and compose.env are private; only the
+# example templates are committed
+instances/*
+!instances/example/

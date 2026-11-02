@@ -13,7 +13,6 @@ from typing import Optional
 from mcp_server.app import mcp
 from mcp_server.helpers import get_connection, rows_to_list
 
-STAT_GROUP_COLUMNS = {"tier", "work_arrangement", "location", "company"}
 
 # Default statuses for get_reference_cvs — only ones with actual evidence a
 # human screened the CV favorably. "applied"/"acknowledged" mean "submitted,
@@ -94,34 +93,28 @@ def get_exclusion_patterns(limit: int = 50) -> list[dict]:
 @mcp.tool()
 def get_success_stats(group_by: str = "tier", limit: int = 50) -> list[dict]:
     """
-    Break down application outcomes by a grouping dimension, largest group
-    first.
+    How applications actually went, broken down by a dimension, largest group first.
 
-    group_by: tier | work_arrangement | location | company. Note: `company`
-    and `location` can have as many distinct values as you have
-    applications — `limit` (default 50, capped at 100) caps how many
-    groups come back, not how many applications are counted.
-    Returns, per group value: total applications and counts at each status.
+    Counts outcomes derived from email and status history (see get_outcomes), not final
+    status — so "rejected" is split into screened out vs rejected after engagement.
+    Only in-scope applications count (sent, inside inbox coverage, not flagged
+    outside_inbox, not archived without emails).
+
+    group_by: tier | persona | work_arrangement | month | ats | location | company.
+    `company` and `location` can have as many groups as applications — `limit` (default
+    50, capped at 100) caps how many groups come back, not how many are counted.
+
+    Per group: applications, small (fewer than 8 — too few to read a rate from),
+    answered / engaged / interviewed / second_round as {count, of, rate, low, high}
+    (low–high is a 95% range), and by_outcome counts.
     """
-    if group_by not in STAT_GROUP_COLUMNS:
-        raise ValueError(f"Invalid group_by: {group_by!r}. Must be one of {sorted(STAT_GROUP_COLUMNS)}")
+    from pipeline.insights import report
+
+    if group_by not in report.DIMENSIONS:
+        raise ValueError(f"Invalid group_by: {group_by!r}. Must be one of {', '.join(report.DIMENSIONS)}")
     limit = max(1, min(limit, MAX_LIST_LIMIT))
-
     with get_connection() as db:
-        rows = db.execute(
-            f"SELECT {group_by} as group_value, status, COUNT(*) as count "
-            f"FROM applications WHERE {group_by} IS NOT NULL "
-            f"GROUP BY {group_by}, status"
-        ).fetchall()
-
-    stats: dict = {}
-    for row in rows:
-        key = row["group_value"] or "(unset)"
-        stats.setdefault(key, {"group_value": key, "total": 0})
-        stats[key][row["status"]] = row["count"]
-        stats[key]["total"] += row["count"]
-
-    return sorted(stats.values(), key=lambda s: -s["total"])[:limit]
+        return report.grouped(db, group_by)[:limit]
 
 
 @mcp.tool()
@@ -244,3 +237,77 @@ def get_flag_history(section_name: Optional[str] = None) -> list[dict]:
     with get_connection() as db:
         rows = db.execute(query, params).fetchall()
         return rows_to_list(rows)
+
+
+@mcp.tool()
+def get_outcomes(
+    outcome: Optional[str] = None,
+    include_excluded: bool = False,
+    flag: Optional[str] = None,
+    limit: int = 50,
+) -> dict:
+    """
+    What actually happened to applications, derived from their history — not their final
+    status (two 'rejected' applications can mean "screened out" or "rejected after four
+    interviews"). Evidence is accepted inbox emails plus manual status changes.
+
+    Outcomes (in-scope applications only):
+      engaged (the company moved it forward — invite, assessment, offer, update):
+        offer | in_progress | rejected_after_engagement | ghosted
+      not engaged: screened_out (a rejection) | awaiting_reply | unanswered (only a
+        receipt or nothing, past the response window)
+    Exclusions (include_excluded=true): not_submitted | archived_no_email | outside_inbox | no_coverage |
+      before_coverage | no_receipt_yet
+    flag: no_receipt | suggest_outside_inbox | applied_date_after_first_email
+
+    Returns summary counts (which always add up) and up to `limit` applications,
+    newest applied first. An acknowledgement is proof of submission, never progress.
+    """
+    from pipeline.insights import outcomes as oc
+
+    if outcome and outcome not in oc.OUTCOMES:
+        raise ValueError(f"outcome must be one of {', '.join(oc.OUTCOMES)}")
+    limit = max(1, min(limit, MAX_LIST_LIMIT))
+    with get_connection() as db:
+        rows, window = oc.load_with_window(db)
+        start = oc.coverage_start(db)
+    summary = oc.summarise(rows, start, window)
+    summary.pop("labels", None)
+    picked = [
+        r for r in rows
+        if (r.in_scope or include_excluded)
+        and (outcome is None or r.outcome == outcome)
+        and (flag is None or flag in r.flags)
+    ]
+    picked.sort(key=lambda r: (r.applied_on is None, r.applied_on), reverse=True)
+    return {"summary": summary, "applications": [r.as_dict() for r in picked[:limit]]}
+
+
+@mcp.tool()
+def get_pipeline_health(top: int = 15) -> dict:
+    """
+    Pipeline health: what to expect from applications already sent and from new ones.
+
+    Each open application is scored with its chance of a screen, a second round and a
+    third round, given its stage and how long it has been quiet. The model:
+    P(next step still to come | quiet d days) = p·G(d) / (p·G(d) + 1 − p), where p is the
+    historical rate of reaching that step and G(d) the share of real replies that took at
+    least d days. A receipt counts for nothing. Learned from settled outcomes only.
+
+    Returns:
+      per_application / per_ten  expected screens, second and third rounds per new
+                                 application (and per 10); offer is null until one is seen
+      pipeline.expected          screens / second_rounds / third_rounds still to come from
+                                 applications already sent
+      recent_weekly_rate         applications sent per week over the last 4 weeks
+      plan                       against WEEKLY_SCREEN_TARGET, if set: applications a week needed
+      decay                      chance of a screen by days since applying
+      model                      the rates and sample sizes behind it
+      applications               the `top` open applications by chance of their next step
+    """
+    from pipeline.insights import forecast
+
+    with get_connection() as db:
+        health = forecast.load(db)
+    health["applications"] = health["applications"][:max(1, min(top, MAX_LIST_LIMIT))]
+    return health

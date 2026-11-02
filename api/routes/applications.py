@@ -26,6 +26,7 @@ from pydantic import BaseModel
 
 from db.database import get_db, rows_to_list, row_to_dict
 from pipeline.config import OUTPUT_PATH
+from pipeline.statuses import GHOSTABLE_STATUSES as _GHOSTABLE_STATUSES, VALID_STATUSES
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +49,7 @@ class ApplicationUpdate(BaseModel):
     salary_max:       Optional[int]   = None
     salary_currency:  Optional[str]   = None
     qa_tone:          Optional[str]   = None
+    outside_inbox:    Optional[bool]  = None     # applied through a channel this inbox doesn't see
 
 
 class DateCreate(BaseModel):
@@ -71,16 +73,9 @@ class ManualApplicationCreate(BaseModel):
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-VALID_STATUSES = {
-    "generated", "reviewing", "applied", "acknowledged",
-    "interviewing", "case_study", "offered",
-    "rejected", "ghosted", "excluded", "archived",
-}
 VALID_TIERS        = {"T1", "T2", "T3", "EX1"}
 VALID_ARRANGEMENTS = {"remote", "hybrid", "office"}
 VALID_QA_TONES     = {"professional", "direct", "conversational", "technical"}
-
-_GHOSTABLE_STATUSES = ("applied", "acknowledged", "interviewing", "case_study")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -147,46 +142,62 @@ def _upsert_applied_date_if_missing(app_id: str, db: sqlite3.Connection) -> None
 # ── Auto-ghost logic ──────────────────────────────────────────────────────────
 
 def _do_auto_ghost(db: sqlite3.Connection, days: int) -> list[str]:
-    cutoff       = (datetime.now() - timedelta(days=days)).isoformat()
-    placeholders = ",".join("?" * len(_GHOSTABLE_STATUSES))
+    """
+    Ghost open applications that have been silent for `days`.
 
-    rows = db.execute(
-        f"""
-        SELECT a.id, a.status,
-               COALESCE(
-                   (SELECT MAX(occurred_at) FROM application_events
-                    WHERE application_id = a.id AND event_type = 'status_change'),
-                   a.updated_at
-               ) AS last_status_change
-        FROM applications a
-        WHERE a.status IN ({placeholders})
-        """,
-        _GHOSTABLE_STATUSES,
-    ).fetchall()
+    Silence is measured from the last meaningful thing that happened — applying, or a real
+    engagement (an invite, assessment, offer or decision). An automated receipt doesn't
+    count, and neither does the day an email was reviewed: an acknowledged application with
+    nothing since is as silent as one that got no reply at all.
+    """
+    from pipeline.insights.outcomes import load_outcomes
 
+    today = date.today()
     ghosted_ids: list[str] = []
-    for row in rows:
-        last = row["last_status_change"]
-        if last and last < cutoff:
-            db.execute("UPDATE applications SET status = 'ghosted' WHERE id = ?", (row["id"],))
-            db.execute(
-                """INSERT INTO application_events
-                   (application_id, event_type, from_status, to_status, detail)
-                   VALUES (?, 'status_change', ?, 'ghosted', ?)""",
-                (row["id"], row["status"], f"Auto-ghosted after {days} days of inactivity"),
-            )
-            ghosted_ids.append(row["id"])
+    by_uuid = {
+        r["uuid"]: r["id"] for r in
+        db.execute(f"SELECT id, uuid, status FROM applications WHERE status IN ({','.join('?' * len(_GHOSTABLE_STATUSES))})",
+                   _GHOSTABLE_STATUSES).fetchall()
+    }
+    if not by_uuid:
+        return []
 
+    for o in load_outcomes(db, today=today):
+        if o.uuid not in by_uuid or not o.last_meaningful:
+            continue
+        silent = (today - o.last_meaningful).days
+        if silent <= days:
+            continue
+        app_id = by_uuid[o.uuid]
+        db.execute("UPDATE applications SET status = 'ghosted' WHERE id = ?", (app_id,))
+        db.execute(
+            """INSERT INTO application_events
+               (application_id, event_type, from_status, to_status, detail)
+               VALUES (?, 'status_change', ?, 'ghosted', ?)""",
+            (app_id, o.status, f"Auto-ghosted: {silent} days with no reply beyond a receipt (threshold {days})"),
+        )
+        ghosted_ids.append(app_id)
     return ghosted_ids
 
 
+def ghost_threshold_days(db: sqlite3.Connection) -> int:
+    """AUTO_GHOST_DAYS, or the response window learned from your data if AUTO_GHOST_USE_WINDOW."""
+    from pipeline.config import AUTO_GHOST_DAYS, AUTO_GHOST_USE_WINDOW
+
+    if not AUTO_GHOST_USE_WINDOW:
+        return AUTO_GHOST_DAYS
+    from pipeline.insights.outcomes import load_with_window
+
+    _, window = load_with_window(db)
+    return window["days"] if window.get("basis") == "data" else AUTO_GHOST_DAYS
+
+
 def run_auto_ghost_job() -> None:
-    from pipeline.config import AUTO_GHOST_DAYS
     from db.database import get_connection
 
     try:
         with get_connection() as db:
-            ghosted = _do_auto_ghost(db, AUTO_GHOST_DAYS)
+            ghosted = _do_auto_ghost(db, ghost_threshold_days(db))
             if ghosted:
                 log.info("Auto-ghost: marked %d application(s) as ghosted", len(ghosted))
             else:
@@ -342,9 +353,9 @@ def update_application(
 
 @router.post("/auto-ghost")
 def trigger_auto_ghost(db: sqlite3.Connection = Depends(get_db)):
-    from pipeline.config import AUTO_GHOST_DAYS
-    ghosted = _do_auto_ghost(db, AUTO_GHOST_DAYS)
-    return {"ghosted": len(ghosted), "ids": ghosted, "days_threshold": AUTO_GHOST_DAYS}
+    days = ghost_threshold_days(db)
+    ghosted = _do_auto_ghost(db, days)
+    return {"ghosted": len(ghosted), "ids": ghosted, "days_threshold": days}
 
 
 # ── Delete ────────────────────────────────────────────────────────────────────

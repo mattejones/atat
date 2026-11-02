@@ -11,7 +11,8 @@ Endpoints:
   PUT  /prompts/{name:path}        — write prompt content by slug
   GET  /prompts/{name:path}/signals — surface relevant DB feedback as inspiration
 
-Security: CORS is locked to localhost. Never expose publicly.
+Security: protected by the access password (api/auth.py) when ATAT_PASSWORD is set;
+without one, only run it on localhost. Personal prompts live under ATAT_HOME.
 
 system: bool — marks prompts that contain JSON schema or output format
   constraints. Editing structure rather than content in these prompts
@@ -26,6 +27,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from db.database import get_db
+from pipeline.config import ATAT_LOCK_ADVANCED, PERSONAL_PROMPTS_PATH
 
 router = APIRouter(prefix="/prompts", tags=["prompts"])
 
@@ -60,6 +62,20 @@ _REGISTRY: list[dict] = [
         "slug":        "judge_accuracy",
         "label":       "Judge — Accuracy",
         "description": "System prompt for the Tier 2 LLM accuracy judge. Defines what counts as an unsupported claim and the expected response schema.",
+        "personal":    False,
+        "system":      True,
+    },
+    {
+        "slug":        "email_triage",
+        "label":       "Inbox — Triage",
+        "description": "System prompt for the Gmail sync's first pass: which emails (sender, subject, snippet only) are about your applications at all.",
+        "personal":    False,
+        "system":      True,
+    },
+    {
+        "slug":        "email_classification",
+        "label":       "Inbox — Classification",
+        "description": "System prompt for classifying a job-related email (acknowledgement, rejection, interview, …) and linking it to an application.",
         "personal":    False,
         "system":      True,
     },
@@ -152,8 +168,11 @@ _SIGNAL_SOURCES: dict[str, list[str]] = {
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _slug_to_path(slug: str) -> Path:
-    resolved = (_PROMPTS_DIR / f"{slug}.md").resolve()
-    if not str(resolved).startswith(str(_PROMPTS_DIR.resolve())):
+    # Personal prompts belong to this instance (ATAT_HOME); the rest ship with the code.
+    entry = _REGISTRY_BY_SLUG.get(slug)
+    base  = PERSONAL_PROMPTS_PATH if entry and entry["personal"] else _PROMPTS_DIR
+    resolved = (base / f"{slug}.md").resolve()
+    if not str(resolved).startswith(str(base.resolve())):
         raise HTTPException(status_code=400, detail="Invalid prompt slug.")
     return resolved
 
@@ -487,6 +506,10 @@ def update_prompt(name: str, body: PromptUpdate):
     entry = _REGISTRY_BY_SLUG.get(name)
     if not entry:
         raise HTTPException(status_code=404, detail=f"Unknown prompt: {name!r}")
+    # On a locked instance the shared system prompts are read-only; the person's own
+    # additions stay editable.
+    if ATAT_LOCK_ADVANCED and not entry["personal"]:
+        raise HTTPException(status_code=403, detail="This prompt is locked on this instance.")
 
     path = _slug_to_path(name)
     path.parent.mkdir(parents=True, exist_ok=True)

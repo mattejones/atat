@@ -1,4 +1,7 @@
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+// Same-origin by default: the browser calls /api/*, which next.config.js proxies to the
+// FastAPI server. That works from a phone or behind a reverse proxy with no per-host build.
+// Set NEXT_PUBLIC_API_URL only to talk to the API directly (dev.sh does this).
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "/api";
 
 export const api = {
   url: API_URL,
@@ -43,5 +46,14 @@ export const api = {
       throw new Error(data.detail || `PATCH ${path} failed: ${res.status}`);
     }
     return res.json();
+  },
+
+  async delete(path: string) {
+    const res = await fetch(`${API_URL}${path}`, { method: "DELETE" });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `DELETE ${path} failed: ${res.status}`);
+    }
+    return res.json().catch(() => ({}));
   },
 };

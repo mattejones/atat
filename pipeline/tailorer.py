@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Optional
 
 from pipeline.config import (
-    REPO_ROOT,
+    LOGS_PATH, PERSONAL_PROMPTS_PATH,
     EXPERIENCE_PATH, PERSONAS_PATH, SKILLS_PATH, META_PATH,
     OUTPUT_PATH, PROMPTS_PATH, LLM_PROVIDER, LLM_MODEL,
     ANTHROPIC_API_KEY, OPENAI_API_KEY, TEMPERATURE,
@@ -99,7 +99,7 @@ def load_persona_files() -> str:
 
 
 def load_personal_additions() -> str:
-    path = PROMPTS_PATH / "personal_additions.md"
+    path = PERSONAL_PROMPTS_PATH / "personal_additions.md"
     if path.exists():
         content = load_text(path)
         log.info("Personal additions loaded.")
@@ -198,7 +198,7 @@ def assemble_user_message(
 
 # ── JSON parsing and validation ───────────────────────────────────────────────
 
-LOG_DIR = REPO_ROOT / "logs" / "cv_generation_failures"
+LOG_DIR = LOGS_PATH / "cv_generation_failures"
 
 
 def _log_generation_failure(raw: str, error: str) -> Path:

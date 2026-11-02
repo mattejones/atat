@@ -60,6 +60,7 @@ export const KIND_LABELS: Record<string, string> = {
   regenerate_section:    "Retry section",
   generate_cover_letter: "Cover letter",
   generate_answers:      "Answer questions",
+  gmail_sync:            "Gmail sync",
 };
 
 export const ACTIVE: JobStatus[] = ["queued", "running"];

@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { api } from "@/lib/api";
 import { createDraft, runJob } from "@/lib/jobs";
+import { decodeEntities } from "@/lib/text";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -214,7 +215,7 @@ function FlagCard({
     >
       {/* Header */}
       <div
-        className={`flex items-start gap-2 px-3 py-2.5 cursor-pointer ${style.bg} rounded-t-lg`}
+        className={`flex items-start gap-2 px-3 py-2.5 min-h-11 cursor-pointer ${style.bg} rounded-t-lg`}
         onClick={() => setExpanded(e => !e)}
       >
         <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${style.pill} flex-shrink-0 mt-0.5`}>
@@ -247,7 +248,7 @@ function FlagCard({
               <button
                 onClick={handleRestore}
                 disabled={saving}
-                className="text-[10px] text-text-muted hover:text-accent underline"
+                className="min-h-11 md:min-h-0 px-2 text-xs md:text-[10px] text-text-muted hover:text-accent underline"
               >
                 Restore
               </button>
@@ -262,19 +263,19 @@ function FlagCard({
                 onChange={e => setComment(e.target.value)}
                 placeholder="Add feedback for retry…"
                 rows={2}
-                className="w-full text-xs px-2 py-1.5 bg-bg-surface border border-bg-border rounded resize-none focus:outline-none focus:ring-1 focus:ring-accent/50 text-text-primary placeholder:text-text-muted"
+                className="w-full text-base md:text-xs px-2 py-1.5 bg-bg-surface border border-bg-border rounded resize-none focus:outline-none focus:ring-1 focus:ring-accent/50 text-text-primary placeholder:text-text-muted"
               />
               <div className="flex gap-1.5">
                 <button
                   onClick={handleAction}
                   disabled={saving}
-                  className="flex-1 py-1.5 text-[11px] font-medium bg-accent text-white rounded hover:bg-accent-dim transition-colors disabled:opacity-50"
+                  className="flex-1 min-h-11 md:min-h-0 py-1.5 text-xs md:text-[11px] font-medium bg-accent text-white rounded hover:bg-accent-dim transition-colors disabled:opacity-50"
                 >
                   {saving ? "Saving…" : "Flag for retry"}
                 </button>
                 <button
                   onClick={() => setExpanded(true)}
-                  className="px-2 py-1.5 text-[11px] text-text-muted border border-bg-border rounded hover:text-text-primary"
+                  className="min-h-11 md:min-h-0 px-3 md:px-2 py-1.5 text-xs md:text-[11px] text-text-muted border border-bg-border rounded hover:text-text-primary"
                   title="Dismiss this flag"
                 >
                   ↓ Dismiss
@@ -287,12 +288,12 @@ function FlagCard({
                   value={dismissReason}
                   onChange={e => setDismiss(e.target.value)}
                   placeholder="e.g. False positive — claim is accurate"
-                  className="w-full text-xs px-2 py-1 bg-bg-surface border border-bg-border rounded focus:outline-none focus:ring-1 focus:ring-accent/50 text-text-primary"
+                  className="w-full min-h-11 md:min-h-0 text-base md:text-xs px-2 py-1 bg-bg-surface border border-bg-border rounded focus:outline-none focus:ring-1 focus:ring-accent/50 text-text-primary"
                 />
                 <button
                   onClick={handleDismiss}
                   disabled={saving}
-                  className="w-full py-1 text-[11px] text-text-muted border border-bg-border rounded hover:text-text-primary hover:border-text-muted transition-colors disabled:opacity-50"
+                  className="w-full min-h-11 md:min-h-0 py-1 text-xs md:text-[11px] text-text-muted border border-bg-border rounded hover:text-text-primary hover:border-text-muted transition-colors disabled:opacity-50"
                 >
                   {saving ? "Saving…" : "Dismiss flag"}
                 </button>
@@ -330,7 +331,7 @@ function VersionDropdown({
     <select
       value={selectedId}
       onChange={e => onSelect(e.target.value)}
-      className="text-xs px-2 py-1.5 bg-bg-surface border border-bg-border rounded-lg text-text-secondary focus:outline-none focus:ring-1 focus:ring-accent/50"
+      className="min-h-11 md:min-h-0 text-sm md:text-xs px-2 py-1.5 bg-bg-surface border border-bg-border rounded-lg text-text-secondary focus:outline-none focus:ring-1 focus:ring-accent/50"
     >
       {[...chain].reverse().map(r => (
         <option key={r.id} value={r.id}>{label(r)}</option>
@@ -358,6 +359,8 @@ export default function ReviewPage() {
   const [accepting,     setAccepting]     = useState(false);
   const [error,         setError]         = useState<string | null>(null);
   const [appName,       setAppName]       = useState("");
+  // Phones show the text or the flags, one at a time; from md up both panes show.
+  const [tab,           setTab]           = useState<"text" | "flags">("text");
 
   useEffect(() => {
     api.get(`/sections/${appId}/${sectionName}`)
@@ -421,6 +424,7 @@ export default function ReviewPage() {
       setChain(updated.reports);
       setSelectedId(result.new_report_id);
       setGlobalComment("");
+      setTab("text");
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -472,26 +476,95 @@ export default function ReviewPage() {
     certifications: "Certifications",
   };
 
+  // Overall feedback + Retry / Accept. Rendered once per layout (desktop pane, phone bar);
+  // only one of the two is ever visible and they share the same state.
+  const feedbackField = (
+    <textarea
+      value={globalComment}
+      onChange={e => setGlobalComment(e.target.value)}
+      placeholder="Additional direction for the retry…"
+      rows={3}
+      disabled={isAccepted}
+      className="w-full text-base md:text-xs px-3 py-2 bg-bg-elevated border border-bg-border rounded-lg resize-none focus:outline-none focus:ring-1 focus:ring-accent/50 text-text-primary placeholder:text-text-muted disabled:opacity-50"
+    />
+  );
+
+  const actions = (
+    <div className="space-y-3">
+      {/* Desktop: always visible. Phones: tucked away so the bar stays short. */}
+      <div className="hidden md:block">
+        <label className="text-[10px] font-semibold text-text-muted uppercase tracking-wide block mb-1.5">
+          Overall feedback
+        </label>
+        {feedbackField}
+      </div>
+      <details className="md:hidden">
+        <summary className="min-h-11 flex items-center text-xs text-text-muted cursor-pointer select-none">
+          Add direction for the retry
+        </summary>
+        <div className="pb-2">{feedbackField}</div>
+      </details>
+
+      <div className="flex flex-col gap-2">
+        <button
+          onClick={handleRetry}
+          disabled={retrying || isAccepted || activeFlags.length === 0}
+          className="w-full min-h-11 md:min-h-0 py-2 text-sm md:text-xs font-medium bg-bg-elevated border border-bg-border text-text-secondary rounded-lg hover:text-text-primary hover:border-text-muted transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {retrying ? (
+            <span className="flex items-center justify-center gap-2">
+              <span className="w-3 h-3 border border-text-muted/30 border-t-text-muted rounded-full animate-spin" />
+              Retrying…
+            </span>
+          ) : (
+            `↺ Retry with ${activeFlags.length} flag${activeFlags.length !== 1 ? "s" : ""}`
+          )}
+        </button>
+        <button
+          onClick={handleRetryDraft}
+          disabled={retrying || isAccepted || activeFlags.length === 0}
+          title="Save the retry as a draft to see exactly what the AI will be told before it runs"
+          className="w-full min-h-11 md:min-h-0 py-1.5 text-xs md:text-[11px] text-text-muted hover:text-text-primary transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          Check the retry request first
+        </button>
+        {/* Last on desktop (as before); first on phones, where it is the main action */}
+        <button
+          onClick={handleAccept}
+          disabled={accepting || isAccepted}
+          className="order-first md:order-none w-full min-h-11 md:min-h-0 py-2 text-sm md:text-xs font-semibold bg-accent text-white rounded-lg hover:bg-accent-dim transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {accepting ? (
+            <span className="flex items-center justify-center gap-2">
+              <span className="w-3 h-3 border border-white/30 border-t-white rounded-full animate-spin" />
+              Accepting…
+            </span>
+          ) : isAccepted ? "✓ Accepted" : "Accept this version"}
+        </button>
+      </div>
+    </div>
+  );
+
   return (
-    <div className="flex flex-col h-screen overflow-hidden bg-bg-base">
+    <div className="flex flex-col md:h-screen md:overflow-hidden bg-bg-base">
 
       {/* ── Header ─────────────────────────────────────────────────────────── */}
-      <header className="flex items-center justify-between px-6 py-3 bg-bg-surface border-b border-bg-border flex-shrink-0">
-        <div className="flex items-center gap-3 min-w-0">
+      <header className="flex flex-wrap items-center justify-between gap-2 px-4 md:px-6 py-3 bg-bg-surface border-b border-bg-border flex-shrink-0">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 min-w-0">
           <Link
             href={`/applications/${appId}`}
-            className="text-xs text-text-muted hover:text-accent transition-colors flex-shrink-0"
+            className="inline-flex items-center min-h-11 md:min-h-0 text-xs text-text-muted hover:text-accent transition-colors flex-shrink-0"
           >
-            ← {appName || "Application"}
+            ← {appName ? decodeEntities(appName) : "Application"}
           </Link>
-          <span className="text-text-muted text-xs flex-shrink-0">/</span>
+          <span className="hidden md:inline text-text-muted text-xs flex-shrink-0">/</span>
           <span className="text-sm font-semibold text-text-primary flex-shrink-0">
             {SECTION_LABELS[sectionName] ?? sectionName} review
           </span>
           <VersionDropdown chain={chain} selectedId={selectedId} onSelect={setSelectedId} />
         </div>
 
-        <div className="flex items-center gap-2 flex-shrink-0">
+        <div className="flex flex-wrap items-center gap-2">
           {isAccepted && (
             <span className="text-[11px] px-2 py-0.5 bg-green-100 text-green-700 rounded-full font-medium">
               ✓ Accepted
@@ -511,7 +584,7 @@ export default function ReviewPage() {
             <button
               onClick={handleEvaluate}
               disabled={evaluating}
-              className="px-3 py-1.5 text-xs font-medium bg-bg-elevated border border-bg-border text-text-secondary rounded-lg hover:text-text-primary transition-colors disabled:opacity-50"
+              className="min-h-11 md:min-h-0 px-3 py-1.5 text-xs font-medium bg-bg-elevated border border-bg-border text-text-secondary rounded-lg hover:text-text-primary transition-colors disabled:opacity-50"
             >
               {evaluating ? "Evaluating…" : "Run evaluation"}
             </button>
@@ -521,7 +594,7 @@ export default function ReviewPage() {
 
       {/* ── Error banner ────────────────────────────────────────────────────── */}
       {error && (
-        <div className="px-6 py-2 bg-red-50 border-b border-red-200 text-xs text-red-700 flex-shrink-0">
+        <div className="px-4 md:px-6 py-2 bg-red-50 border-b border-red-200 text-xs text-red-700 flex-shrink-0">
           {error}
           <button onClick={() => setError(null)} className="ml-3 underline">Dismiss</button>
         </div>
@@ -531,7 +604,7 @@ export default function ReviewPage() {
       {docLevelFlags.map(f => (
         <div
           key={f.id}
-          className={`px-6 py-2 text-xs flex-shrink-0 flex items-center gap-2 ${flagStyle(f.type).bg} border-b ${flagStyle(f.type).border}`}
+          className={`px-4 md:px-6 py-2 text-xs flex-shrink-0 flex items-start md:items-center gap-2 ${flagStyle(f.type).bg} border-b ${flagStyle(f.type).border}`}
         >
           <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${flagStyle(f.type).pill}`}>
             {flagStyle(f.type).label}
@@ -540,21 +613,38 @@ export default function ReviewPage() {
         </div>
       ))}
 
+      {/* ── Phone tab switch: text or flags ─────────────────────────────────── */}
+      <div className="md:hidden flex border-b border-bg-border bg-bg-surface" role="tablist">
+        {([["text", "Text"], ["flags", `Flags${activeFlags.length ? ` (${activeFlags.length})` : ""}`]] as const).map(([key, label]) => (
+          <button
+            key={key}
+            role="tab"
+            aria-selected={tab === key}
+            onClick={() => setTab(key)}
+            className={`flex-1 min-h-11 text-sm font-medium border-b-2 transition-colors ${
+              tab === key ? "border-accent text-text-primary" : "border-transparent text-text-muted"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
       {/* ── Main split panel ────────────────────────────────────────────────── */}
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-col md:flex-row flex-1 md:overflow-hidden">
 
         {/* Left — annotated text */}
-        <div className="flex-1 overflow-y-auto p-8 border-r border-bg-border">
+        <div className={`${tab === "text" ? "block" : "hidden"} md:block md:flex-1 md:overflow-y-auto p-4 md:p-8 md:border-r border-bg-border`}>
           {!report ? (
             <div className="text-sm text-text-muted">Loading…</div>
           ) : (
             <>
-              <div className="flex items-center justify-between mb-4">
+              <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 mb-4">
                 <h2 className="text-xs font-semibold text-text-muted uppercase tracking-wide">
                   Generated text — attempt {report.attempt}
                 </h2>
                 {report.evaluations.length > 0 && (
-                  <div className="flex items-center gap-3">
+                  <div className="flex flex-wrap items-center gap-3">
                     {report.evaluations.map(e => (
                       <span key={e.id} className="text-[10px] text-text-muted">
                         {e.tier}{" "}
@@ -569,7 +659,7 @@ export default function ReviewPage() {
                 )}
               </div>
 
-              <div className="text-sm text-text-primary leading-relaxed font-sans whitespace-pre-wrap bg-bg-elevated rounded-xl border border-bg-border p-6">
+              <div className="text-sm text-text-primary leading-relaxed font-sans whitespace-pre-wrap bg-bg-elevated rounded-xl border border-bg-border p-4 md:p-6">
                 {text
                   ? buildAnnotatedSegments(text, flags, hoveredFlagId)
                   : <span className="text-text-muted italic">No text available.</span>
@@ -580,9 +670,9 @@ export default function ReviewPage() {
         </div>
 
         {/* Right — flag list + actions */}
-        <div className="w-96 flex-shrink-0 flex flex-col overflow-hidden">
+        <div className={`${tab === "flags" ? "flex" : "hidden"} md:flex w-full md:w-96 md:flex-shrink-0 flex-col md:overflow-hidden`}>
 
-          <div className="flex-1 overflow-y-auto p-4 space-y-2">
+          <div className="flex-1 md:overflow-y-auto p-4 space-y-2">
             <div className="flex items-center justify-between mb-1">
               <h2 className="text-xs font-semibold text-text-muted uppercase tracking-wide">Flags</h2>
               <span className="text-[10px] text-text-muted">
@@ -609,61 +699,16 @@ export default function ReviewPage() {
             ))}
           </div>
 
-          {/* Actions footer */}
-          <div className="flex-shrink-0 border-t border-bg-border p-4 space-y-3 bg-bg-surface">
-            <div>
-              <label className="text-[10px] font-semibold text-text-muted uppercase tracking-wide block mb-1.5">
-                Overall feedback
-              </label>
-              <textarea
-                value={globalComment}
-                onChange={e => setGlobalComment(e.target.value)}
-                placeholder="Additional direction for the retry…"
-                rows={3}
-                disabled={isAccepted}
-                className="w-full text-xs px-3 py-2 bg-bg-elevated border border-bg-border rounded-lg resize-none focus:outline-none focus:ring-1 focus:ring-accent/50 text-text-primary placeholder:text-text-muted disabled:opacity-50"
-              />
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <button
-                onClick={handleRetry}
-                disabled={retrying || isAccepted || activeFlags.length === 0}
-                className="w-full py-2 text-xs font-medium bg-bg-elevated border border-bg-border text-text-secondary rounded-lg hover:text-text-primary hover:border-text-muted transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                {retrying ? (
-                  <span className="flex items-center justify-center gap-2">
-                    <span className="w-3 h-3 border border-text-muted/30 border-t-text-muted rounded-full animate-spin" />
-                    Retrying…
-                  </span>
-                ) : (
-                  `↺ Retry with ${activeFlags.length} flag${activeFlags.length !== 1 ? "s" : ""}`
-                )}
-              </button>
-              <button
-                onClick={handleRetryDraft}
-                disabled={retrying || isAccepted || activeFlags.length === 0}
-                title="Save the retry as a draft to see exactly what the model will be told before it runs"
-                className="w-full py-1.5 text-[11px] text-text-muted hover:text-text-primary transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                Review retry prompt first
-              </button>
-
-              <button
-                onClick={handleAccept}
-                disabled={accepting || isAccepted}
-                className="w-full py-2 text-xs font-semibold bg-accent text-white rounded-lg hover:bg-accent-dim transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                {accepting ? (
-                  <span className="flex items-center justify-center gap-2">
-                    <span className="w-3 h-3 border border-white/30 border-t-white rounded-full animate-spin" />
-                    Accepting…
-                  </span>
-                ) : isAccepted ? "✓ Accepted" : "Accept this version"}
-              </button>
-            </div>
+          {/* Actions footer — desktop; phones get the sticky copy below */}
+          <div className="hidden md:block flex-shrink-0 border-t border-bg-border p-4 bg-bg-surface">
+            {actions}
           </div>
         </div>
+      </div>
+
+      {/* Actions bar — phones: stays above the bottom tab bar on both tabs */}
+      <div className="md:hidden sticky bottom-[calc(3.5rem+env(safe-area-inset-bottom))] z-30 border-t border-bg-border bg-bg-surface p-3">
+        {actions}
       </div>
     </div>
   );

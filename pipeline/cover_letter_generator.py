@@ -28,6 +28,7 @@ from pipeline.config import (
     MAX_OUTPUT_TOKENS,
     META_PATH,
     OPENAI_API_KEY,
+    PERSONAL_PROMPTS_PATH,
     PROMPTS_PATH,
     SKILLS_PATH,
     TEMPERATURE,
@@ -54,7 +55,7 @@ _FALLBACK_SYSTEM = (
 
 def _load_system_prompt() -> str:
     base_path     = PROMPTS_PATH / "cover_letter_system.md"
-    personal_path = PROMPTS_PATH / "cover_letter_personal.md"
+    personal_path = PERSONAL_PROMPTS_PATH / "cover_letter_personal.md"
 
     base = _FALLBACK_SYSTEM
     if base_path.exists():

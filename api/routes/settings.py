@@ -2,10 +2,11 @@
 settings.py — Read and write ATAT configuration settings.
 
 Reads from the active environment (via pipeline.config) and writes
-changes back to the .env file in the repo root.
+changes back to this instance's .env file (ATAT_HOME/.env).
 
-Security: CORS is locked to localhost, so these endpoints are
-only reachable from the local UI. Never expose this API publicly.
+Security: protected by the access password (api/auth.py) when ATAT_PASSWORD is set; without
+one, only run the API on localhost. Set ATAT_LOCK_ADVANCED=true on an instance used by
+someone non-technical to make the provider, keys, models and paths read-only here.
 """
 
 import os
@@ -16,16 +17,25 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from pipeline.config import ATAT_HOME, ATAT_LOCK_ADVANCED
+
 router = APIRouter(prefix="/settings", tags=["settings"])
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-_ENV_FILE  = _REPO_ROOT / ".env"
+_ENV_FILE = ATAT_HOME / ".env"
 
 # Sentinel pattern for masked keys — never write these to disk
 _MASK_PATTERN = re.compile(r'^.{2,8}•+.{2,8}$')
 
 # Fields that are locked in demo mode — overridden by convention, not .env
 _DEMO_LOCKED_FIELDS = {"cv_library_path", "output_path"}
+
+# Fields a locked instance refuses to change: the AI setup, secrets and file locations.
+# Everyday behaviour (ghosting, Gmail schedule, targets) stays editable.
+_ADVANCED_FIELDS = {
+    "llm_provider", "llm_model", "judge_model", "retry_model",
+    "anthropic_api_key", "openai_api_key", "cv_library_path", "output_path",
+    "thinking_budget", "render_pdf", "temperature",
+}
 
 
 # ── Models ────────────────────────────────────────────────────────────────────
@@ -46,6 +56,12 @@ class Settings(BaseModel):
     auto_ghost_enabled:       bool
     auto_ghost_days:          int
     scheduler_interval_hours: int
+    gmail_enabled:               bool = False
+    gmail_sync_interval_minutes: int  = 30
+    inbox_classifier:            str  = "api"
+    auto_ghost_use_window:       bool  = False
+    weekly_screen_target:        float = 0
+    advanced_locked:             bool  = False
 
 
 class SettingsUpdate(BaseModel):
@@ -63,6 +79,11 @@ class SettingsUpdate(BaseModel):
     auto_ghost_enabled:       Optional[bool]  = None
     auto_ghost_days:          Optional[int]   = None
     scheduler_interval_hours: Optional[int]   = None
+    gmail_enabled:               Optional[bool] = None
+    gmail_sync_interval_minutes: Optional[int]  = None
+    inbox_classifier:            Optional[str]  = None
+    auto_ghost_use_window:       Optional[bool]  = None
+    weekly_screen_target:        Optional[float] = None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -113,6 +134,8 @@ def get_settings():
         THINKING_BUDGET, RENDER_PDF, TEMPERATURE,
         ANTHROPIC_API_KEY, OPENAI_API_KEY, DEMO_MODE,
         AUTO_GHOST_ENABLED, AUTO_GHOST_DAYS, SCHEDULER_INTERVAL_HOURS,
+        GMAIL_ENABLED, GMAIL_SYNC_INTERVAL_MINUTES, INBOX_CLASSIFIER,
+        AUTO_GHOST_USE_WINDOW, WEEKLY_SCREEN_TARGET,
     )
     return Settings(
         llm_provider             = LLM_PROVIDER,
@@ -130,6 +153,12 @@ def get_settings():
         auto_ghost_enabled       = AUTO_GHOST_ENABLED,
         auto_ghost_days          = AUTO_GHOST_DAYS,
         scheduler_interval_hours = SCHEDULER_INTERVAL_HOURS,
+        gmail_enabled               = GMAIL_ENABLED,
+        gmail_sync_interval_minutes = GMAIL_SYNC_INTERVAL_MINUTES,
+        inbox_classifier            = INBOX_CLASSIFIER,
+        auto_ghost_use_window       = AUTO_GHOST_USE_WINDOW,
+        weekly_screen_target        = WEEKLY_SCREEN_TARGET,
+        advanced_locked             = ATAT_LOCK_ADVANCED,
     )
 
 
@@ -140,6 +169,18 @@ def update_settings(body: SettingsUpdate):
     updates = body.model_dump(exclude_none=True)
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
+    if updates.get("weekly_screen_target") is not None and updates["weekly_screen_target"] < 0:
+        raise HTTPException(status_code=422, detail="weekly_screen_target can't be negative")
+    if updates.get("inbox_classifier") not in (None, "api", "agent"):
+        raise HTTPException(status_code=422, detail="inbox_classifier must be 'api' or 'agent'")
+
+    if ATAT_LOCK_ADVANCED:
+        locked = _ADVANCED_FIELDS.intersection(updates.keys())
+        if locked:
+            raise HTTPException(
+                status_code=403,
+                detail=f"These settings are locked on this instance: {', '.join(sorted(locked))}",
+            )
 
     if DEMO_MODE:
         locked = _DEMO_LOCKED_FIELDS.intersection(updates.keys())
@@ -164,6 +205,11 @@ def update_settings(body: SettingsUpdate):
         "auto_ghost_enabled":       "AUTO_GHOST_ENABLED",
         "auto_ghost_days":          "AUTO_GHOST_DAYS",
         "scheduler_interval_hours": "SCHEDULER_INTERVAL_HOURS",
+        "gmail_enabled":               "GMAIL_ENABLED",
+        "gmail_sync_interval_minutes": "GMAIL_SYNC_INTERVAL_MINUTES",
+        "inbox_classifier":            "INBOX_CLASSIFIER",
+        "auto_ghost_use_window":       "AUTO_GHOST_USE_WINDOW",
+        "weekly_screen_target":        "WEEKLY_SCREEN_TARGET",
     }
 
     key_fields = {"anthropic_api_key", "openai_api_key"}
@@ -185,7 +231,13 @@ def update_settings(body: SettingsUpdate):
         if isinstance(value, bool):
             value = "true" if value else "false"
 
-        _write_env_value(env_key, str(value))
+        try:
+            _write_env_value(env_key, str(value))
+        except OSError as e:   # e.g. .env mounted read-only in a container
+            raise HTTPException(
+                status_code=500,
+                detail=f"Couldn't save settings — the settings file isn't writable ({e.strerror or e}).",
+            )
         written.append(env_key)
 
     return {

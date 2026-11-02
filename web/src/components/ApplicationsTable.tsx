@@ -6,9 +6,13 @@ import {
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 
-import { STATUS_LABELS, STATUS_FLOW, STATUS_STYLES } from "@/lib/statuses";
+import { STAGES, STATUS_LABELS } from "@/lib/statuses";
+import { decodeEntities } from "@/lib/text";
+import Sheet from "@/components/ui/Sheet";
+import StatusPicker from "@/components/ui/StatusPicker";
 
-const API = process.env.NEXT_PUBLIC_API_URL;
+import { api } from "@/lib/api";
+const API = api.url;
 
 type SortKey = "applied_date" | "company" | "role" | "status";
 type SortDir = "asc" | "desc";
@@ -62,76 +66,6 @@ function usePortalDropdown() {
   }, [open]);
 
   return { open, setOpen, pos, triggerRef, toggle };
-}
-
-// ── Status dropdown ────────────────────────────────────────────────────────────
-
-function StatusDropdown({
-  app,
-  onUpdate,
-}: {
-  app: Application;
-  onUpdate: (uuid: string, status: string) => void;
-}) {
-  const [loading, setLoading] = useState(false);
-  const { open, setOpen, pos, triggerRef, toggle } = usePortalDropdown();
-  const options = STATUS_FLOW[app.status] ?? [];
-
-  async function changeStatus(next: string) {
-    setOpen(false);
-    setLoading(true);
-    try {
-      const res = await fetch(`${API}/applications/${app.uuid}`, {
-        method:  "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ status: next }),
-      });
-      if (res.ok) onUpdate(app.uuid, next);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  return (
-    <>
-      <button
-        ref={triggerRef}
-        onClick={(e) => { e.stopPropagation(); options.length > 0 && toggle(); }}
-        disabled={loading || options.length === 0}
-        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium transition-opacity ${
-          STATUS_STYLES[app.status] ?? STATUS_STYLES.generated
-        } ${options.length > 0 ? "cursor-pointer hover:opacity-80" : "cursor-default"}`}
-      >
-        {loading
-          ? <span className="w-2 h-2 border border-current/40 border-t-current rounded-full animate-spin" />
-          : (STATUS_LABELS[app.status] ?? app.status)}
-        {options.length > 0 && !loading && <span className="opacity-50 text-[10px]">▾</span>}
-      </button>
-
-      {open && options.length > 0 && createPortal(
-        <div
-          onClick={(e) => e.stopPropagation()}
-          onMouseDown={(e) => e.stopPropagation()}
-          style={{ position: "absolute", top: pos.top, left: pos.left, minWidth: pos.width, zIndex: 9999 }}
-          className="bg-white border border-bg-border rounded-lg shadow-xl py-1"
-        >
-          <p className="px-3 py-1 text-[10px] font-semibold text-text-muted uppercase tracking-wide">
-            Move to
-          </p>
-          {options.map((s) => (
-            <button
-              key={s}
-              onClick={() => changeStatus(s)}
-              className="w-full text-left px-3 py-1.5 text-xs text-text-secondary hover:bg-bg-surface hover:text-text-primary transition-colors"
-            >
-              {STATUS_LABELS[s] ?? s}
-            </button>
-          ))}
-        </div>,
-        document.body
-      )}
-    </>
-  );
 }
 
 // ── Actions menu ──────────────────────────────────────────────────────────────
@@ -264,6 +198,14 @@ export default function ApplicationsTable({
   const [search, setSearch]         = useState("");
   const [sortKey, setSortKey]       = useState<SortKey>("applied_date");
   const [sortDir, setSortDir]       = useState<SortDir>("desc");
+  const [stage, setStage]           = useState<string>("all");
+
+  // Phone-only: an actions sheet per application, and an edit sheet (the table edits inline).
+  const [actionsFor, setActionsFor]     = useState<Application | null>(null);
+  const [confirmDelete, setConfirmDel]  = useState(false);
+  const [sheetEdit, setSheetEdit]       = useState<EditState | null>(null);
+  const [sheetBusy, setSheetBusy]       = useState(false);
+  const [sheetError, setSheetError]     = useState<string | null>(null);
 
   function toggleSort(col: SortKey) {
     if (sortKey === col) {
@@ -276,14 +218,16 @@ export default function ApplicationsTable({
 
   const visible = useMemo(() => {
     const q = search.toLowerCase().trim();
+    const stageStatuses = STAGES.find((s) => s.key === stage)?.statuses as readonly string[] | undefined;
+    const inStage = stageStatuses ? apps.filter((a) => stageStatuses.includes(a.status)) : apps;
     const filtered = q
-      ? apps.filter((a) =>
-          a.company.toLowerCase().includes(q) ||
-          a.role.toLowerCase().includes(q) ||
+      ? inStage.filter((a) =>
+          decodeEntities(a.company).toLowerCase().includes(q) ||
+          decodeEntities(a.role).toLowerCase().includes(q) ||
           a.status.toLowerCase().includes(q) ||
           (STATUS_LABELS[a.status] ?? "").toLowerCase().includes(q)
         )
-      : apps;
+      : inStage;
 
     return [...filtered].sort((a, b) => {
       let av = "", bv = "";
@@ -296,7 +240,7 @@ export default function ApplicationsTable({
       const cmp = av < bv ? -1 : av > bv ? 1 : 0;
       return sortDir === "asc" ? cmp : -cmp;
     });
-  }, [apps, search, sortKey, sortDir]);
+  }, [apps, search, stage, sortKey, sortDir]);
 
   function updateStatus(appUuid: string, status: string) {
     setApps((prev) => prev.map((a) => a.uuid === appUuid ? { ...a, status } : a));
@@ -345,6 +289,63 @@ export default function ApplicationsTable({
     }
   }
 
+  function closeSheets() {
+    setActionsFor(null);
+    setConfirmDel(false);
+    setSheetEdit(null);
+    setSheetError(null);
+  }
+
+  async function sheetSave() {
+    if (!sheetEdit) return;
+    setSheetBusy(true);
+    setSheetError(null);
+    try {
+      await api.patch(`/applications/${sheetEdit.uuid}`, {
+        company: sheetEdit.company, role: sheetEdit.role,
+      });
+      await api.put(`/applications/${sheetEdit.uuid}/dates/applied`, {
+        date: sheetEdit.applied_date || null,
+      });
+      setApps((prev) => prev.map((a) => a.uuid === sheetEdit.uuid
+        ? { ...a, company: sheetEdit.company, role: sheetEdit.role, applied_date: sheetEdit.applied_date || null }
+        : a));
+      closeSheets();
+    } catch (e) {
+      setSheetError(e instanceof Error ? e.message : "Couldn't save.");
+    } finally {
+      setSheetBusy(false);
+    }
+  }
+
+  async function sheetArchive(app: Application) {
+    setSheetBusy(true);
+    setSheetError(null);
+    try {
+      await api.patch(`/applications/${app.uuid}`, { status: "archived" });
+      updateStatus(app.uuid, "archived");
+      closeSheets();
+    } catch (e) {
+      setSheetError(e instanceof Error ? e.message : "Couldn't archive.");
+    } finally {
+      setSheetBusy(false);
+    }
+  }
+
+  async function sheetDelete(app: Application) {
+    setSheetBusy(true);
+    setSheetError(null);
+    try {
+      await api.delete(`/applications/${app.uuid}?delete_files=false`);
+      removeApp(app.uuid);
+      closeSheets();
+    } catch (e) {
+      setSheetError(e instanceof Error ? e.message : "Couldn't remove it.");
+    } finally {
+      setSheetBusy(false);
+    }
+  }
+
   const thClass    = "text-left px-4 py-3 text-xs font-semibold text-text-muted uppercase tracking-wide select-none";
   const thSortable = `${thClass} cursor-pointer hover:text-text-secondary transition-colors`;
 
@@ -369,7 +370,168 @@ export default function ApplicationsTable({
         )}
       </div>
 
-      <div className="rounded-xl border border-bg-border overflow-visible">
+      <div className="flex items-center gap-2">
+        <div className="flex-1 flex gap-1.5 overflow-x-auto -mx-1 px-1 pb-1">
+          {[{ key: "all", label: "All" }, ...STAGES].map((s) => (
+            <button
+              key={s.key}
+              onClick={() => setStage(s.key)}
+              className={`shrink-0 min-h-9 px-3 rounded-full text-xs font-medium border transition-colors ${
+                stage === s.key
+                  ? "bg-accent text-white border-accent"
+                  : "bg-bg-elevated text-text-secondary border-bg-border hover:text-text-primary"
+              }`}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+        {/* The table sorts by clicking headers; phones get a select instead */}
+        <select
+          aria-label="Sort"
+          value={`${sortKey}:${sortDir}`}
+          onChange={(e) => {
+            const [k, d] = e.target.value.split(":");
+            setSortKey(k as SortKey);
+            setSortDir(d as SortDir);
+          }}
+          className="md:hidden min-h-9 px-2 text-xs bg-bg-elevated border border-bg-border rounded-lg text-text-secondary"
+        >
+          <option value="applied_date:desc">Newest</option>
+          <option value="applied_date:asc">Oldest</option>
+          <option value="company:asc">Company A–Z</option>
+          <option value="status:asc">Status</option>
+        </select>
+      </div>
+
+      {/* Phones: one card per application */}
+      <ul className="md:hidden space-y-2">
+        {visible.length === 0 && (
+          <li className="py-8 text-center text-sm text-text-muted">
+            {search ? `No applications matching "${search}"` : "No applications"}
+          </li>
+        )}
+        {visible.map((app) => (
+          <li
+            key={app.uuid}
+            onClick={() => router.push(`/applications/${app.uuid}`)}
+            className={`bg-bg-elevated border border-bg-border rounded-xl px-4 py-3 active:bg-bg-surface ${
+              app.status === "archived" ? "opacity-50" : ""
+            }`}
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <p className="font-medium text-text-primary truncate">{decodeEntities(app.company)}</p>
+                <p className="text-sm text-text-secondary line-clamp-2">{decodeEntities(app.role)}</p>
+              </div>
+              <button
+                aria-label="Actions"
+                onClick={(e) => { e.stopPropagation(); setActionsFor(app); }}
+                className="shrink-0 -mr-2 -mt-1 min-h-11 min-w-11 flex items-center justify-center text-text-muted"
+              >
+                ···
+              </button>
+            </div>
+            <div className="mt-1 flex items-center gap-3 text-xs text-text-muted">
+              <StatusPicker uuid={app.uuid} status={app.status} onUpdate={(s) => updateStatus(app.uuid, s)} />
+              <span>{app.applied_date ?? "Not applied"}</span>
+              {app.has_pdf && <span className="text-accent">PDF ✓</span>}
+            </div>
+          </li>
+        ))}
+      </ul>
+
+      <Sheet
+        open={!!actionsFor}
+        onClose={closeSheets}
+        title={actionsFor ? decodeEntities(actionsFor.company) : ""}
+      >
+        {actionsFor && !confirmDelete && (
+          <div className="space-y-2">
+            <button
+              onClick={() => {
+                setSheetEdit({
+                  uuid: actionsFor.uuid, company: decodeEntities(actionsFor.company),
+                  role: decodeEntities(actionsFor.role), applied_date: actionsFor.applied_date ?? "",
+                });
+                setActionsFor(null);
+              }}
+              className="w-full min-h-11 px-3 text-left text-sm rounded-lg border border-bg-border bg-bg-surface"
+            >
+              Edit details
+            </button>
+            <button
+              onClick={() => sheetArchive(actionsFor)}
+              disabled={sheetBusy || actionsFor.status === "archived"}
+              className="w-full min-h-11 px-3 text-left text-sm rounded-lg border border-bg-border bg-bg-surface disabled:opacity-40"
+            >
+              Archive
+            </button>
+            <button
+              onClick={() => setConfirmDel(true)}
+              className="w-full min-h-11 px-3 text-left text-sm rounded-lg border border-red-200 bg-red-50 text-red-600"
+            >
+              Delete…
+            </button>
+          </div>
+        )}
+        {actionsFor && confirmDelete && (
+          <div className="space-y-3">
+            <p className="text-sm text-text-secondary">
+              Remove this application from the tracker? Its files stay on disk.
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => sheetDelete(actionsFor)}
+                disabled={sheetBusy}
+                className="flex-1 min-h-11 rounded-lg bg-red-600 text-white text-sm disabled:opacity-50"
+              >
+                {sheetBusy ? "Removing…" : "Remove"}
+              </button>
+              <button
+                onClick={() => setConfirmDel(false)}
+                className="flex-1 min-h-11 rounded-lg border border-bg-border text-sm"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+        {sheetError && <p className="mt-3 text-xs text-red-600">{sheetError}</p>}
+      </Sheet>
+
+      <Sheet open={!!sheetEdit} onClose={closeSheets} title="Edit details">
+        {sheetEdit && (
+          <div className="space-y-3">
+            {([
+              ["Company", "company", "text"],
+              ["Role", "role", "text"],
+              ["Date applied", "applied_date", "date"],
+            ] as const).map(([label, key, type]) => (
+              <label key={key} className="block text-xs text-text-muted">
+                {label}
+                <input
+                  type={type}
+                  value={sheetEdit[key]}
+                  onChange={(e) => setSheetEdit({ ...sheetEdit, [key]: e.target.value })}
+                  className="mt-1 w-full min-h-11 px-3 text-base text-text-primary bg-white border border-bg-border rounded-lg"
+                />
+              </label>
+            ))}
+            {sheetError && <p className="text-xs text-red-600">{sheetError}</p>}
+            <button
+              onClick={sheetSave}
+              disabled={sheetBusy}
+              className="w-full min-h-11 rounded-lg bg-accent text-white text-sm font-medium disabled:opacity-50"
+            >
+              {sheetBusy ? "Saving…" : "Save"}
+            </button>
+          </div>
+        )}
+      </Sheet>
+
+      {/* Tablet and desktop: the table */}
+      <div className="hidden md:block rounded-xl border border-bg-border overflow-visible">
         <table className="w-full text-sm border-collapse">
           <thead>
             <tr className="bg-bg-surface border-b border-bg-border">
@@ -434,7 +596,7 @@ export default function ApplicationsTable({
                         className="w-full px-2 py-1 text-sm border border-accent/50 rounded-md bg-white focus:outline-none focus:ring-1 focus:ring-accent"
                       />
                     ) : (
-                      <span className="font-medium text-text-primary">{app.company}</span>
+                      <span className="font-medium text-text-primary">{decodeEntities(app.company)}</span>
                     )}
                   </td>
 
@@ -451,12 +613,12 @@ export default function ApplicationsTable({
                         className="w-full px-2 py-1 text-sm border border-accent/50 rounded-md bg-white focus:outline-none focus:ring-1 focus:ring-accent"
                       />
                     ) : (
-                      <span className="text-text-secondary">{app.role}</span>
+                      <span className="text-text-secondary">{decodeEntities(app.role)}</span>
                     )}
                   </td>
 
                   <td className="px-4 py-3">
-                    <StatusDropdown app={app} onUpdate={updateStatus} />
+                    <StatusPicker uuid={app.uuid} status={app.status} onUpdate={(s) => updateStatus(app.uuid, s)} />
                   </td>
 
                   <td className="px-4 py-3">

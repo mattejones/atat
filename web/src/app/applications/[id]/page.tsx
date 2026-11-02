@@ -1,16 +1,19 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { createPortal } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { STATUS_LABELS, STATUS_FLOW, STATUS_STYLES } from "@/lib/statuses";
+import { STATUS_LABELS } from "@/lib/statuses";
+import { decodeEntities } from "@/lib/text";
+import StatusPicker from "@/components/ui/StatusPicker";
 import CoverLetterPanel from "@/components/CoverLetterPanel";
+import { FLAG_LABELS, OUTCOME_HINTS, OUTCOME_STYLES, STAGE_LABELS, type Outcome } from "@/lib/outcomes";
 
-const API = process.env.NEXT_PUBLIC_API_URL;
+import { api } from "@/lib/api";
+const API = api.url;
 
 type ViewMode = "preview" | "raw" | "reasoning" | "jd" | "history" | "cover_letter";
 
@@ -37,102 +40,6 @@ const EVENT_TYPE_LABELS: Record<string, string> = {
   email_received: "Email received",
   note_added:     "Note added",
 };
-
-// ── Inline status dropdown ────────────────────────────────────────────────────
-
-function InlineStatusDropdown({
-  appId,
-  status,
-  onUpdate,
-}: {
-  appId:    string;
-  status:   string;
-  onUpdate: (newStatus: string) => void;
-}) {
-  const [loading, setLoading] = useState(false);
-  const [open, setOpen]       = useState(false);
-  const [pos, setPos]         = useState({ top: 0, left: 0 });
-  const triggerRef            = useRef<HTMLButtonElement>(null);
-  const options               = STATUS_FLOW[status] ?? [];
-
-  function toggle() {
-    if (!open && triggerRef.current) {
-      const r = triggerRef.current.getBoundingClientRect();
-      setPos({ top: r.bottom + window.scrollY + 4, left: r.left + window.scrollX });
-    }
-    setOpen((o) => !o);
-  }
-
-  useEffect(() => {
-    if (!open) return;
-    function close() { setOpen(false); }
-    document.addEventListener("mousedown", close);
-    document.addEventListener("scroll", close, true);
-    return () => {
-      document.removeEventListener("mousedown", close);
-      document.removeEventListener("scroll", close, true);
-    };
-  }, [open]);
-
-  async function changeStatus(next: string) {
-    setOpen(false);
-    setLoading(true);
-    try {
-      const res = await fetch(`${API}/applications/${appId}`, {
-        method:  "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ status: next }),
-      });
-      if (res.ok) onUpdate(next);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  return (
-    <>
-      <button
-        ref={triggerRef}
-        onClick={toggle}
-        disabled={loading || options.length === 0}
-        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-opacity ${
-          STATUS_STYLES[status] ?? STATUS_STYLES.generated
-        } ${options.length > 0 ? "cursor-pointer hover:opacity-80" : "cursor-default"}`}
-      >
-        {loading
-          ? <span className="w-2 h-2 border border-current/40 border-t-current rounded-full animate-spin" />
-          : (STATUS_LABELS[status] ?? status)}
-        {options.length > 0 && !loading && (
-          <span className="opacity-50 text-[10px]">▾</span>
-        )}
-      </button>
-
-      {open && options.length > 0 && createPortal(
-        <div
-          onClick={(e) => e.stopPropagation()}
-          onMouseDown={(e) => e.stopPropagation()}
-          style={{ position: "absolute", top: pos.top, left: pos.left, minWidth: 180, zIndex: 9999 }}
-          className="bg-white border border-bg-border rounded-lg shadow-xl py-1"
-        >
-          <p className="px-3 py-1 text-[10px] font-semibold text-text-muted uppercase tracking-wide">
-            Move to
-          </p>
-          {options.map((s) => (
-            <button
-              key={s}
-              onClick={() => changeStatus(s)}
-              className="w-full text-left px-3 py-1.5 text-xs text-text-secondary hover:bg-bg-surface hover:text-text-primary transition-colors flex items-center gap-2"
-            >
-              <span className={`inline-block w-2 h-2 rounded-full border ${STATUS_STYLES[s]?.split(" ").find(c => c.startsWith("border")) ?? ""}`} />
-              {STATUS_LABELS[s] ?? s}
-            </button>
-          ))}
-        </div>,
-        document.body
-      )}
-    </>
-  );
-}
 
 // ── Sections panel ────────────────────────────────────────────────────────────
 
@@ -258,18 +165,18 @@ function RoleDetails({ meta, onSave }: { meta: any; onSave: (updates: any) => vo
         </div>
       ) : (
         <div className="space-y-3">
-          <div className="grid grid-cols-3 gap-2 items-center">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-1 sm:gap-2 sm:items-center">
             <label className="text-xs text-text-secondary">Location</label>
             <input value={form.location} onChange={(e) => setForm((f) => ({ ...f, location: e.target.value }))}
               placeholder="e.g. London, UK"
-              className="col-span-2 px-2 py-1.5 text-sm bg-white border border-bg-border rounded-md focus:outline-none focus:ring-1 focus:ring-accent/50" />
+              className="sm:col-span-2 min-h-11 sm:min-h-0 px-2 py-1.5 text-base sm:text-sm bg-white border border-bg-border rounded-md focus:outline-none focus:ring-1 focus:ring-accent/50" />
           </div>
-          <div className="grid grid-cols-3 gap-2 items-center">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-1 sm:gap-2 sm:items-center">
             <label className="text-xs text-text-secondary">Working</label>
-            <div className="col-span-2 flex gap-1.5">
+            <div className="sm:col-span-2 flex gap-1.5">
               {(["remote", "hybrid", "office"] as const).map((a) => (
                 <button key={a} onClick={() => setForm((f) => ({ ...f, work_arrangement: a }))}
-                  className={`px-3 py-1 text-xs rounded-full border transition-colors capitalize ${
+                  className={`px-4 py-2 sm:px-3 sm:py-1 text-xs rounded-full border transition-colors capitalize ${
                     form.work_arrangement === a ? "bg-accent text-white border-accent" : "border-bg-border text-text-secondary hover:border-accent/50"
                   }`}>
                   {ARRANGEMENT_LABELS[a]}
@@ -278,12 +185,12 @@ function RoleDetails({ meta, onSave }: { meta: any; onSave: (updates: any) => vo
             </div>
           </div>
           {form.work_arrangement === "hybrid" && (
-            <div className="grid grid-cols-3 gap-2 items-center">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-1 sm:gap-2 sm:items-center">
               <label className="text-xs text-text-secondary">Days in office</label>
-              <div className="col-span-2 flex gap-1.5">
+              <div className="sm:col-span-2 flex gap-1.5">
                 {[1,2,3,4,5].map((d) => (
                   <button key={d} onClick={() => setForm((f) => ({ ...f, hybrid_days: d }))}
-                    className={`w-8 h-7 text-xs rounded-md border transition-colors ${
+                    className={`w-11 h-11 sm:w-8 sm:h-7 text-xs rounded-md border transition-colors ${
                       Number(form.hybrid_days) === d ? "bg-accent text-white border-accent" : "border-bg-border text-text-secondary hover:border-accent/50"
                     }`}>{d}</button>
                 ))}
@@ -291,18 +198,18 @@ function RoleDetails({ meta, onSave }: { meta: any; onSave: (updates: any) => vo
               </div>
             </div>
           )}
-          <div className="grid grid-cols-3 gap-2 items-center">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-1 sm:gap-2 sm:items-center">
             <label className="text-xs text-text-secondary">Salary</label>
-            <div className="col-span-2 flex gap-2 items-center">
+            <div className="sm:col-span-2 flex flex-wrap gap-2 items-center">
               <select value={form.salary_currency} onChange={(e) => setForm((f) => ({ ...f, salary_currency: e.target.value }))}
                 className="px-2 py-1.5 text-xs bg-white border border-bg-border rounded-md focus:outline-none">
                 {CURRENCIES.map((c) => <option key={c} value={c}>{c}</option>)}
               </select>
               <input type="number" value={form.salary_min} onChange={(e) => setForm((f) => ({ ...f, salary_min: e.target.value }))}
-                placeholder="Min" className="w-28 px-2 py-1.5 text-sm bg-white border border-bg-border rounded-md focus:outline-none" />
+                placeholder="Min" className="w-24 sm:w-28 min-h-11 sm:min-h-0 px-2 py-1.5 text-base sm:text-sm bg-white border border-bg-border rounded-md focus:outline-none" />
               <span className="text-xs text-text-muted">–</span>
               <input type="number" value={form.salary_max} onChange={(e) => setForm((f) => ({ ...f, salary_max: e.target.value }))}
-                placeholder="Max" className="w-28 px-2 py-1.5 text-sm bg-white border border-bg-border rounded-md focus:outline-none" />
+                placeholder="Max" className="w-24 sm:w-28 min-h-11 sm:min-h-0 px-2 py-1.5 text-base sm:text-sm bg-white border border-bg-border rounded-md focus:outline-none" />
             </div>
           </div>
         </div>
@@ -316,6 +223,102 @@ function Detail({ label, value }: { label: string; value: string }) {
     <div className="flex gap-3">
       <span className="text-xs text-text-muted w-16 flex-shrink-0">{label}</span>
       <span className="text-xs text-text-primary">{value}</span>
+    </div>
+  );
+}
+
+// ── Outcome panel ─────────────────────────────────────────────────────────────
+// What actually happened, derived from accepted emails and status history — not the
+// status field. Re-read whenever the status or the outside-inbox flag changes.
+
+function OutcomePanel({ appId, status, outsideInbox, onFlagChange }: {
+  appId:        string;
+  status:       string;
+  outsideInbox: boolean;
+  onFlagChange: (value: boolean) => Promise<void>;
+}) {
+  const [outcome, setOutcome] = useState<Outcome | null>(null);
+  const [saving, setSaving]   = useState(false);
+
+  useEffect(() => {
+    fetch(`${API}/insights/outcomes/${appId}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then(setOutcome)
+      .catch(() => setOutcome(null));
+  }, [appId, status, outsideInbox]);
+
+  if (!outcome) return null;
+
+  const fmt = (d: string | null) =>
+    d ? new Date(d).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) : "—";
+
+  async function toggle(value: boolean) {
+    setSaving(true);
+    try { await onFlagChange(value); } finally { setSaving(false); }
+  }
+
+  return (
+    <div className="bg-bg-elevated border border-bg-border rounded-xl px-4 sm:px-6 py-4 space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-x-4">
+        <h2 className="text-xs font-semibold text-text-muted uppercase tracking-wide">How it's going</h2>
+        <label className="flex items-center gap-2 min-h-11 text-xs text-text-secondary cursor-pointer">
+          <input
+            type="checkbox"
+            checked={outsideInbox}
+            disabled={saving}
+            onChange={(e) => toggle(e.target.checked)}
+            className="w-5 h-5 sm:w-3.5 sm:h-3.5 accent-accent"
+          />
+          Applied outside this inbox
+        </label>
+      </div>
+
+      {outcome.in_scope && outcome.outcome ? (
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <span className={`px-2 py-0.5 text-xs font-medium border rounded-full ${OUTCOME_STYLES[outcome.outcome]}`}>
+              {/* "Ghosted" is also a status, so name the derived outcome differently */}
+              {outcome.outcome === "ghosted" ? "Went quiet after contact" : outcome.outcome_label}
+            </span>
+            <span className="text-xs text-text-secondary">{OUTCOME_HINTS[outcome.outcome]}</span>
+          </div>
+          {outcome.score && (
+            <p className="text-xs text-text-secondary">
+              Chance of {outcome.score.waiting_for}:{" "}
+              <span className="font-medium text-text-primary">{Math.round(outcome.score.p_next * 100)}%</span>
+              {outcome.score.waiting_for === "screen" && (
+                <> · of a second round: <span className="text-text-primary">{Math.round(outcome.score.p_second * 100)}%</span></>
+              )}
+            </p>
+          )}
+          <details className="group">
+            <summary className="min-h-11 flex items-center text-xs text-text-muted cursor-pointer select-none">
+              Details
+            </summary>
+          <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-text-secondary">
+            <span>Furthest stage: <span className="text-text-primary">{STAGE_LABELS[outcome.furthest_stage]}</span></span>
+            {outcome.rounds > 0 && <span>Interview rounds: <span className="text-text-primary">{outcome.rounds}</span></span>}
+            <span>Applied: <span className="text-text-primary">{fmt(outcome.applied_on)}{outcome.applied_estimated ? " (estimated)" : ""}</span></span>
+            {outcome.first_engagement && <span>First engagement: <span className="text-text-primary">{fmt(outcome.first_engagement)}</span></span>}
+            {outcome.decision_on && <span>Decision: <span className="text-text-primary">{fmt(outcome.decision_on)}</span></span>}
+            <span>Emails: <span className="text-text-primary">{outcome.email_count}</span></span>
+            {outcome.evidence_source && <span>Evidence: <span className="text-text-primary">{outcome.evidence_source}</span></span>}
+          </div>
+          </details>
+        </div>
+      ) : (
+        <p className="text-xs text-text-muted">
+          Not in outcome reports: {outcome.exclusion_label?.toLowerCase() ?? "excluded"}.
+        </p>
+      )}
+
+      {outcome.flags.length > 0 && (
+        <ul className="space-y-0.5">
+          {outcome.flags.map((f) => (
+            <li key={f} className="text-xs text-amber-700">{FLAG_LABELS[f] ?? f}</li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
@@ -364,6 +367,7 @@ function NotesPanel({ appId, initialNotes }: { appId: string; initialNotes: stri
 
 function HistoryPanel({ appId }: { appId: string }) {
   const [events, setEvents]   = useState<any[]>([]);
+  const [emails, setEmails]   = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -371,6 +375,11 @@ function HistoryPanel({ appId }: { appId: string }) {
       .then((r) => r.json())
       .then((data) => { setEvents(Array.isArray(data) ? data : []); setLoading(false); })
       .catch(() => setLoading(false));
+    // Emails linked from the Inbox — accepted ones and any still waiting for review.
+    fetch(`${API}/inbox?review_status=all&application_uuid=${appId}`)
+      .then((r) => r.json())
+      .then((data) => setEmails(Array.isArray(data) ? data.filter((e: any) => e.review_status === "accepted" || e.review_status === "pending") : []))
+      .catch(() => {});
   }, [appId]);
 
   function describeEvent(event: any): string {
@@ -398,6 +407,23 @@ function HistoryPanel({ appId }: { appId: string }) {
 
   return (
     <div className="bg-bg-elevated p-8 min-h-[40vh]">
+      {emails.length > 0 && (
+        <div className="mb-8">
+          <h3 className="text-xs font-semibold text-text-muted uppercase tracking-wide mb-2">Emails</h3>
+          <ul className="space-y-1.5">
+            {emails.map((e) => (
+              <li key={e.id} className="flex items-baseline gap-2 text-xs">
+                <span className="text-text-muted font-mono shrink-0">{(e.received_at ?? "").slice(0, 10)}</span>
+                <span className="text-text-primary truncate">{e.subject || "(no subject)"}</span>
+                <span className="text-text-muted shrink-0">{(e.classification ?? "unclassified").replace(/_/g, " ")}</span>
+                {e.review_status === "pending" && (
+                  <Link href="/inbox" className="text-accent hover:underline shrink-0">review</Link>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {loading && (
         <p className="text-sm text-text-muted">Loading history…</p>
       )}
@@ -490,6 +516,7 @@ export default function ApplicationPage() {
   const [reasoning, setReasoning]       = useState<string>("");
   const [hasReasoning, setHasReasoning] = useState(false);
   const [view, setView]                 = useState<ViewMode>("preview");
+  const [showAdvancedTabs, setShowAdvancedTabs] = useState(false);
   const [dirty, setDirty]               = useState(false);
   const [saving, setSaving]             = useState(false);
   const [rendering, setRendering]       = useState(false);
@@ -566,52 +593,52 @@ export default function ApplicationPage() {
       body:    JSON.stringify(updates),
     });
     if (res.ok) setMeta(await res.json());
-  }
-
-  function handleToneChange(tone: string) {
-    setMeta((m: any) => m ? { ...m, qa_tone: tone } : m);
+    else setError("Couldn't save those details. Please try again.");
   }
 
   const hasJd = !!meta?.jd_text;
 
+  // The tabs a person needs day to day, then the ones that are mostly for tinkering.
   const views: ViewMode[] = [
     "preview",
-    "raw",
-    ...(hasJd ? (["jd"] as ViewMode[]) : []),
-    "reasoning",
-    "history",
     "cover_letter",
+    ...(hasJd ? (["jd"] as ViewMode[]) : []),
+    "history",
   ];
+  const advancedViews: ViewMode[] = ["raw", "reasoning"];
+  const showAdvanced = showAdvancedTabs || advancedViews.includes(view);
 
   const VIEW_LABELS: Record<ViewMode, string> = {
-    preview:      "Preview",
-    raw:          "Raw",
-    jd:           "Job Description",
+    preview:      "CV",
+    raw:          "Edit text",
+    jd:           "Job ad",
     reasoning:    "🧠 Reasoning",
     history:      "History",
-    cover_letter: "Cover Letter",
+    cover_letter: "Cover letter",
   };
 
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-start justify-between gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 sm:gap-4">
         <div>
           <div className="flex items-center gap-2 text-sm text-text-muted mb-1">
-            <Link href="/" className="hover:text-accent transition-colors">Applications</Link>
-            <span>/</span>
-            <span className="text-text-secondary">{meta?.company || id}</span>
+            <Link href="/" className="hover:text-accent transition-colors py-2">← Applications</Link>
           </div>
           <h1 className="text-xl font-semibold text-text-primary">
-            {meta?.company || "Application"}
-            {meta?.role && <span className="font-normal text-text-secondary ml-2">— {meta.role}</span>}
+            {decodeEntities(meta?.company) || "Application"}
+            {meta?.role && (
+              <span className="block sm:inline font-normal text-text-secondary sm:ml-2">
+                <span className="hidden sm:inline">— </span>{decodeEntities(meta.role)}
+              </span>
+            )}
           </h1>
           {meta && (
             <div className="mt-2">
-              <InlineStatusDropdown
-                appId={id}
+              <StatusPicker
+                uuid={id}
                 status={meta.status}
-                onUpdate={(newStatus) => setMeta((m: any) => m ? { ...m, status: newStatus } : m)}
+                onUpdate={(newStatus: string) => setMeta((m: any) => m ? { ...m, status: newStatus } : m)}
               />
             </div>
           )}
@@ -620,12 +647,12 @@ export default function ApplicationPage() {
           )}
         </div>
 
-        <div className="flex items-center gap-2 flex-shrink-0">
+        <div className="flex flex-wrap items-center gap-2 sm:flex-shrink-0">
           {dirty && (
             <button
               onClick={handleSave}
               disabled={saving}
-              className="px-3 py-1.5 text-xs font-medium border border-accent text-accent rounded-lg hover:bg-accent/10 transition-colors disabled:opacity-50"
+              className="min-h-11 sm:min-h-0 px-3 py-1.5 text-xs font-medium border border-accent text-accent rounded-lg hover:bg-accent/10 transition-colors disabled:opacity-50"
             >
               {saving ? "Saving…" : "Save changes"}
             </button>
@@ -633,7 +660,7 @@ export default function ApplicationPage() {
           <button
             onClick={handleRender}
             disabled={rendering}
-            className="px-3 py-1.5 text-xs font-medium bg-accent text-white rounded-lg hover:bg-accent-dim transition-colors disabled:opacity-50 flex items-center gap-1.5"
+            className="min-h-11 sm:min-h-0 px-3 py-1.5 text-xs font-medium bg-accent text-white rounded-lg hover:bg-accent-dim transition-colors disabled:opacity-50 flex items-center gap-1.5"
           >
             {rendering
               ? <><span className="w-3 h-3 border border-white/30 border-t-white rounded-full animate-spin" />Rendering…</>
@@ -644,7 +671,7 @@ export default function ApplicationPage() {
               href={`${API}/applications/${id}/pdf`}
               target="_blank"
               rel="noopener noreferrer"
-              className="px-3 py-1.5 text-xs font-medium bg-bg-elevated border border-bg-border text-text-secondary rounded-lg hover:text-text-primary transition-colors"
+              className="min-h-11 sm:min-h-0 inline-flex items-center px-3 py-1.5 text-xs font-medium bg-bg-elevated border border-bg-border text-text-secondary rounded-lg hover:text-text-primary transition-colors"
             >
               Download PDF
             </a>
@@ -657,19 +684,35 @@ export default function ApplicationPage() {
       )}
 
       {meta && <RoleDetails meta={meta} onSave={handleRoleDetailsSave} />}
+      {meta && (
+        <OutcomePanel
+          appId={id}
+          status={meta.status}
+          outsideInbox={!!meta.outside_inbox}
+          onFlagChange={(value) => handleRoleDetailsSave({ outside_inbox: value })}
+        />
+      )}
       {meta && <NotesPanel appId={id} initialNotes={meta.notes ?? ""} />}
       {sections.length > 0 && <SectionsPanel appId={id} sections={sections} />}
 
       {/* View toggle */}
-      <div className="flex gap-1 bg-bg-surface rounded-lg p-1 w-fit border border-bg-border">
-        {views.map((v) => (
-          <button key={v} onClick={() => setView(v)}
-            className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
-              view === v ? "bg-white text-text-primary shadow-sm" : "text-text-secondary hover:text-text-primary"
-            }`}>
-            {VIEW_LABELS[v]}
-          </button>
-        ))}
+      <div className="max-w-full overflow-x-auto">
+        <div className="flex gap-1 bg-bg-surface rounded-lg p-1 w-fit border border-bg-border">
+          {[...views, ...(showAdvanced ? advancedViews : [])].map((v) => (
+            <button key={v} onClick={() => setView(v)}
+              className={`shrink-0 min-h-11 sm:min-h-0 px-3 py-1 text-xs font-medium rounded-md transition-colors ${
+                view === v ? "bg-white text-text-primary shadow-sm" : "text-text-secondary hover:text-text-primary"
+              }`}>
+              {VIEW_LABELS[v]}
+            </button>
+          ))}
+          {!showAdvanced && (
+            <button onClick={() => setShowAdvancedTabs(true)}
+              className="shrink-0 min-h-11 sm:min-h-0 px-3 py-1 text-xs text-text-muted hover:text-text-primary">
+              More…
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Content area — document views share a bordered container;
@@ -677,7 +720,7 @@ export default function ApplicationPage() {
       {(["preview", "raw", "jd", "reasoning", "history"] as ViewMode[]).includes(view) && (
         <div className="rounded-xl border border-bg-border overflow-hidden">
           {view === "preview" && (
-            <div className="bg-bg-elevated p-8 prose-cv max-w-none min-h-[60vh]">
+            <div className="bg-bg-elevated p-4 sm:p-8 prose-cv max-w-none min-h-[60vh]">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
             </div>
           )}

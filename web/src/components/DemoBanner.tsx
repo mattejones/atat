@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from "react";
 
-const API = process.env.NEXT_PUBLIC_API_URL;
+import { api } from "@/lib/api";
+const API = api.url;
 
 export default function DemoBanner() {
   const [demoMode, setDemoMode] = useState(false);

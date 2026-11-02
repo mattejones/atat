@@ -1,0 +1,34 @@
+# Keep personal data and secrets out of the image build context entirely.
+.env
+.env.*
+data/
+output/
+jds/
+logs/
+atat.db
+*.db
+instances/
+demo/
+fonts/
+
+# Personal prompt files are per-instance (they live in ATAT_HOME/prompts), never in the image
+prompts/personal_additions.md
+prompts/cover_letter_personal.md
+
+# Not needed to run
+.git
+.github
+.claude/
+tests/
+web/
+img/
+sql/
+__pycache__/
+*.pyc
+.venv/
+venv/
+node_modules/
+package-lock.json
+*.sh
+atat_launch.bat
+README.md

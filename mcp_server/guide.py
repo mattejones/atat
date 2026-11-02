@@ -70,7 +70,11 @@ run_coverage) can go straight through.
 - feedback rating: positive | negative
 - job status: draft | queued | running | succeeded | failed | cancelled
 - job kind: analyse_job | submit_job | generate_cv | run_coverage | run_judges |
-  regenerate_section | generate_cover_letter | generate_answers
+  regenerate_section | generate_cover_letter | generate_answers | gmail_sync
+- inbox classification: acknowledgement | rejection | interview_request | assessment |
+  offer | progress_update | recruiter_outreach | other_job | not_job
+- inbox review_status: untriaged | pending | accepted | dismissed | auto_ignored
+- inbox classifier: api | agent
 
 ## End-to-end workflow (job ad -> submitted application)
 1. `scrape_job_url(url)` — if it errors or the text looks thin (JS-rendered
@@ -184,6 +188,42 @@ ground truth, not a derivative of it:
 - `get_meta()` — name/contact/links used in every CV header.
 - `search_library(query)` — keyword search across all of the above without
   loading everything; returns matching snippets, not full files.
+
+## Outcomes: what actually happened to applications
+`status` is a single final value; `get_outcomes()` derives what really happened from
+accepted emails and status history. Engagement is judged by email content (an invite,
+assessment, offer or update — even from a no-reply address), never by sender; a
+receipt proves submission, not progress. Use outcomes, not status, for anything about
+success rates or pipeline health. `update_application(outside_inbox=true)` excludes an
+application that went through a channel the inbox doesn't see.
+- outcome: offer | in_progress | rejected_after_engagement | ghosted | screened_out |
+  awaiting_reply | unanswered
+- `get_pipeline_health()` answers "what can I expect?": each open application's chance
+  of a screen / next round (decaying with silence), the screens and rounds expected from
+  what's already sent, and how many to expect per new application.
+
+## Inbox: application emails from Gmail (read-only)
+ATAT reads Gmail (gmail.readonly — it can't send, delete or label) and links
+application emails to applications. Nothing it finds changes an application
+until it's accepted.
+- `sync_inbox()` queues a gmail_sync job (returns the running one if a sync is
+  already going). It also runs on a schedule when GMAIL_ENABLED=true.
+- `list_inbox(review_status="pending")` is the review queue. Each email carries
+  a classification, the linked application (app_uuid/company/role, or null), a
+  confidence, a verbatim evidence quote, and the proposed change
+  (proposed_status, proposed_date_type, proposed_date). The proposal never
+  moves an application backwards.
+- Show the applicant the pending emails and let them decide. On their say-so:
+  `accept_inbox_email(id)` applies the proposal (optionally to a different
+  application_uuid, or with apply_status/apply_date false);
+  `relink_inbox_email(id, application_uuid)` fixes a wrong link first;
+  `dismiss_inbox_email(id)` drops it. Don't accept on your own initiative —
+  the queue exists so a human confirms every status change.
+- Agent mode (INBOX_CLASSIFIER=agent, or `sync_inbox(classifier="agent")`): the
+  sync makes no model calls and leaves mail 'untriaged'. You classify it: call
+  `get_untriaged_emails()` (its instructions field has the rules and verdict
+  format), then `classify_inbox_emails([...])` with a verdict per email, and
+  repeat until remaining is 0. Verdicts land in the same review queue.
 
 ## What this server does NOT do
 No Todoist or browser tools live here — that orchestration is expected to

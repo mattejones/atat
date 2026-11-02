@@ -5,12 +5,39 @@ Uses httpx for fetching and basic HTML parsing to extract the main text content.
 Returns cleaned plain text suitable for the LLM tailoring pipeline.
 """
 
+import asyncio
+import ipaddress
 import re
+import socket
+from urllib.parse import urljoin, urlparse
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/scrape", tags=["scrape"])
+
+
+async def assert_public_url(url: str) -> None:
+    """
+    Refuse URLs that resolve to a private, loopback, link-local or otherwise non-public
+    address (which includes Tailscale's 100.64.0.0/10). Without this, "fetch this job ad"
+    would let anyone signed in read other services on the home network through this server.
+    Not a defence against DNS rebinding between this check and the fetch.
+    """
+    host = urlparse(url).hostname
+    if not host:
+        raise HTTPException(status_code=422, detail="That doesn't look like a web address.")
+    try:
+        infos = await asyncio.to_thread(socket.getaddrinfo, host, None)
+    except socket.gaierror:
+        raise HTTPException(status_code=422, detail=f"Couldn't find {host}. Check the address.")
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0].split("%")[0])
+        if not ip.is_global:
+            raise HTTPException(
+                status_code=422,
+                detail="That address is on a private network, so ATAT won't fetch it.",
+            )
 
 
 class ScrapeResponse(BaseModel):
@@ -42,8 +69,10 @@ async def scrape_jd(url: str) -> ScrapeResponse:
         url = "https://" + url
 
     try:
+        # Redirects are followed by hand so every hop is checked: a public page must not be
+        # able to bounce this server onto an address inside the home network.
         async with httpx.AsyncClient(
-            follow_redirects=True,
+            follow_redirects=False,
             timeout=15.0,
             headers={
                 "User-Agent": (
@@ -53,7 +82,15 @@ async def scrape_jd(url: str) -> ScrapeResponse:
                 )
             },
         ) as client:
-            response = await client.get(url)
+            for _hop in range(6):
+                await assert_public_url(url)
+                response = await client.get(url)
+                if response.is_redirect and response.headers.get("location"):
+                    url = urljoin(url, response.headers["location"])
+                    continue
+                break
+            else:
+                raise HTTPException(status_code=422, detail="Too many redirects.")
             response.raise_for_status()
     except httpx.HTTPStatusError as e:
         raise HTTPException(

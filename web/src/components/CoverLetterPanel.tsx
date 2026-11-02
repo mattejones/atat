@@ -6,7 +6,8 @@ import remarkGfm from "remark-gfm";
 import { useRouter } from "next/navigation";
 import { createDraft, runJob } from "@/lib/jobs";
 
-const API = process.env.NEXT_PUBLIC_API_URL;
+import { api } from "@/lib/api";
+const API = api.url;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 

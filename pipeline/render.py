@@ -27,7 +27,9 @@ from pipeline.parse_cv import ParsedCV, ExperienceEntry, EducationEntry, parse_c
 
 log = logging.getLogger(__name__)
 
-_FONTS_DIR = Path(__file__).resolve().parent.parent / "fonts"
+from pipeline.config import FONTS_PATH
+
+_FONTS_DIR = FONTS_PATH   # shared across instances; override with FONTS_PATH
 
 P: dict[str, str] = {
     "bg":      "#F8F5F1",

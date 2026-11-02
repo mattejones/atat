@@ -3,12 +3,19 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import ApplicationsTable from "@/components/ApplicationsTable";
+import Sheet from "@/components/ui/Sheet";
+import { STATUS_LABELS } from "@/lib/statuses";
 
-const API = process.env.NEXT_PUBLIC_API_URL;
+import { api } from "@/lib/api";
+const API = api.url;
 
 // ── Manual log modal ──────────────────────────────────────────────────────────
 
-const STATUSES = ["applied", "acknowledged", "interviewing", "offered", "rejected", "reviewing"];
+// Statuses that make sense for something applied for outside ATAT: everything except the
+// pipeline-only steps (analysed/generated) and the "set aside" ones.
+const LOGGABLE = Object.keys(STATUS_LABELS).filter(
+  (s) => !["analysed", "generated", "excluded", "archived"].includes(s),
+);
 
 function LogManualModal({
   onClose,
@@ -40,20 +47,14 @@ function LogManualModal({
     setSaving(true);
     setError(null);
     try {
-      const res = await fetch(`${API}/applications`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          company:      form.company.trim(),
-          role:         form.role.trim(),
-          source_url:   form.source_url.trim() || null,
-          status:       form.status,
-          applied_date: form.applied_date || null,
-          notes:        form.notes.trim() || null,
-        }),
+      const data = await api.post("/applications", {
+        company:      form.company.trim(),
+        role:         form.role.trim(),
+        source_url:   form.source_url.trim() || null,
+        status:       form.status,
+        applied_date: form.applied_date || null,
+        notes:        form.notes.trim() || null,
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Failed to save");
       onCreated(data);
       onClose();
     } catch (e: any) {
@@ -64,18 +65,8 @@ function LogManualModal({
   }
 
   return (
-    <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-5">
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-text-primary">Log an application</h2>
-          <button
-            onClick={onClose}
-            className="text-text-muted hover:text-text-secondary text-xl leading-none"
-          >
-            ×
-          </button>
-        </div>
-
+    <Sheet open onClose={onClose} title="Log an application">
+      <div className="space-y-5">
         <p className="text-xs text-text-secondary">
           Record a job you applied for outside ATAT — no CV or JD needed.
         </p>
@@ -91,7 +82,7 @@ function LogManualModal({
               value={form.company}
               onChange={(e) => set("company", e.target.value)}
               placeholder="e.g. Stripe"
-              className="w-full px-3 py-2 border border-bg-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-accent/40"
+              className="w-full min-h-11 px-3 py-2 border border-bg-border rounded-lg text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-accent/40"
             />
           </div>
 
@@ -105,7 +96,7 @@ function LogManualModal({
               value={form.role}
               onChange={(e) => set("role", e.target.value)}
               placeholder="e.g. RevOps Manager"
-              className="w-full px-3 py-2 border border-bg-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-accent/40"
+              className="w-full min-h-11 px-3 py-2 border border-bg-border rounded-lg text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-accent/40"
             />
           </div>
 
@@ -118,10 +109,10 @@ function LogManualModal({
               <select
                 value={form.status}
                 onChange={(e) => set("status", e.target.value)}
-                className="w-full px-3 py-2 border border-bg-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-accent/40 bg-white capitalize"
+                className="w-full min-h-11 px-3 py-2 border border-bg-border rounded-lg text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-accent/40 bg-white capitalize"
               >
-                {STATUSES.map((s) => (
-                  <option key={s} value={s} className="capitalize">{s}</option>
+                {LOGGABLE.map((s) => (
+                  <option key={s} value={s}>{STATUS_LABELS[s]}</option>
                 ))}
               </select>
             </div>
@@ -133,7 +124,7 @@ function LogManualModal({
                 type="date"
                 value={form.applied_date}
                 onChange={(e) => set("applied_date", e.target.value)}
-                className="w-full px-3 py-2 border border-bg-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-accent/40"
+                className="w-full min-h-11 px-3 py-2 border border-bg-border rounded-lg text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-accent/40"
               />
             </div>
           </div>
@@ -148,7 +139,7 @@ function LogManualModal({
               value={form.source_url}
               onChange={(e) => set("source_url", e.target.value)}
               placeholder="https://…"
-              className="w-full px-3 py-2 border border-bg-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-accent/40"
+              className="w-full min-h-11 px-3 py-2 border border-bg-border rounded-lg text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-accent/40"
             />
           </div>
 
@@ -162,7 +153,7 @@ function LogManualModal({
               onChange={(e) => set("notes", e.target.value)}
               rows={2}
               placeholder="Recruiter contact, referral, context…"
-              className="w-full px-3 py-2 border border-bg-border rounded-lg text-sm resize-none focus:outline-none focus:ring-2 focus:ring-accent/40"
+              className="w-full min-h-11 px-3 py-2 border border-bg-border rounded-lg text-base sm:text-sm resize-none focus:outline-none focus:ring-2 focus:ring-accent/40"
             />
           </div>
         </div>
@@ -189,7 +180,7 @@ function LogManualModal({
           </button>
         </div>
       </div>
-    </div>
+    </Sheet>
   );
 }
 
@@ -223,7 +214,7 @@ export default function HomePage() {
 
       <div className="space-y-8">
         {/* Header */}
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h1 className="text-2xl font-semibold text-text-primary">Applications</h1>
             <p className="text-sm text-text-secondary mt-1">
@@ -237,13 +228,14 @@ export default function HomePage() {
           <div className="flex items-center gap-2">
             <button
               onClick={() => setShowModal(true)}
-              className="px-4 py-2 border border-bg-border text-sm text-text-secondary rounded-lg hover:text-text-primary hover:border-accent/40 transition-colors"
+              className="min-h-11 px-4 py-2 border border-bg-border text-sm text-text-secondary rounded-lg hover:text-text-primary hover:border-accent/40 transition-colors"
             >
               Log manually
             </button>
+            {/* Phones have the New tab in the bottom bar */}
             <Link
               href="/generate"
-              className="inline-flex items-center gap-2 px-4 py-2 bg-accent text-white text-sm font-medium rounded-lg hover:bg-accent-dim transition-colors"
+              className="hidden md:inline-flex items-center gap-2 px-4 py-2 bg-accent text-white text-sm font-medium rounded-lg hover:bg-accent-dim transition-colors"
             >
               + New Application
             </Link>

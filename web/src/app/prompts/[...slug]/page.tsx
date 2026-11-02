@@ -6,7 +6,8 @@ import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-const API = process.env.NEXT_PUBLIC_API_URL;
+import { api } from "@/lib/api";
+const API = api.url;
 
 type ViewMode  = "raw" | "preview";
 type SaveState = "idle" | "saving" | "saved" | "error";

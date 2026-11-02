@@ -73,13 +73,92 @@ the TTF files into `fonts/`. The PDF renderer expects them at that path.
 ### Running
 
 ```bash
-# Development (two terminals)
-./dev.sh          # starts FastAPI on :8000
-cd web && npm run dev   # starts Next.js on :3000
+# Development
+./dev.sh          # API on :8001, web on :3001, MCP server on :8765
 
-# Production
-./start.sh        # builds and starts both
+# Production on this machine
+./start.sh        # builds, then API on :8000, web on :18080, MCP server on :8765
 ```
+
+On a phone or another computer, don't run these — use [Deploying](#deploying-to-a-home-server).
+
+## Deploying to a home server
+
+ATAT is built to run always-on on a home server, one **instance per person**. An instance
+is its own stack — database, CV library, generated CVs, personal prompts, Gmail connection,
+password and port — so two people never share data. The code and shared prompts are the same.
+
+```
+instances/kerri/            ← ATAT_HOME inside the containers (/data)
+  .env                      ← API key, ATAT_PASSWORD, settings   (private, git-ignored)
+  compose.env               ← port, CV library location          (private, git-ignored)
+  data/atat.db, data/gmail/ ← created on first run
+  output/, logs/, prompts/  ← her CVs, failure dumps, personal_additions.md
+```
+
+### Set up an instance
+
+1. Copy the template and fill it in:
+   ```bash
+   cp -r instances/example instances/kerri
+   mv instances/kerri/.env.example instances/kerri/.env
+   mv instances/kerri/compose.env.example instances/kerri/compose.env
+   ```
+   In `.env`: set `ANTHROPIC_API_KEY` and a long `ATAT_PASSWORD`. In `compose.env`: give
+   the instance its own `WEB_PORT`, point `CV_LIBRARY_DIR` at *her* CV library, and set
+   `ATAT_UID`/`ATAT_GID` to the owner of the folder (`id -u`, `id -g`).
+2. Put the Poppins `.ttf` files in `fonts/` (shared by every instance).
+3. Start it:
+   ```bash
+   docker compose --env-file instances/kerri/compose.env -p atat-kerri up -d --build
+   ```
+4. Open `http://localhost:<WEB_PORT>` on the server and sign in.
+
+Start from an **empty** instance for a new person. Don't copy someone else's
+`personal_additions.md` — it is injected into every CV prompt — or their database.
+(A database copied between machines also carries absolute output paths, so it only works if
+the new instance uses the same mount path.)
+
+### Exposing it safely
+
+Only the web container publishes a port, and it listens on `127.0.0.1` by default. The API
+and MCP server are never published to the network. To reach it from a phone:
+
+- **Tailscale** (simplest): `tailscale serve --bg --https=443 http://127.0.0.1:<WEB_PORT>`,
+  then open the machine's tailnet name on the phone and "Add to Home Screen".
+- Or a reverse proxy with HTTPS (Caddy, Traefik) behind Cloudflare Access / a VPN.
+
+Always keep `ATAT_PASSWORD` set. It is one shared password per instance (a signed,
+30-day cookie; failed logins are rate-limited) — a second lock behind the private network,
+not a replacement for it. Don't use `WEB_BIND=0.0.0.0` without it.
+
+For a non-technical user set `ATAT_LOCK_ADVANCED=true` in the instance `.env`: the AI
+provider, keys, models, file paths and the shared prompts become read-only in the app, and
+the Advanced settings block is hidden. Change them in the `.env` and restart:
+`docker compose --env-file instances/kerri/compose.env -p atat-kerri restart api`.
+
+### Gmail
+
+Connecting Gmail is a one-time step that needs a browser. Do it on a laptop with this
+repo and that instance's folder as `ATAT_HOME`, then copy the result across:
+
+```bash
+ATAT_HOME=$PWD/instances/kerri python -m pipeline.inbox.auth   # writes instances/kerri/data/gmail/token.json
+```
+
+Set `GMAIL_ENABLED=true` and `INBOX_CLASSIFIER=api` in the instance `.env` (the app itself
+sorts the mail; `agent` mode needs an MCP client).
+
+### Day to day
+
+```bash
+docker compose --env-file instances/kerri/compose.env -p atat-kerri logs -f api
+docker compose --env-file instances/kerri/compose.env -p atat-kerri up -d --build   # update
+```
+
+Back up each instance directory (it is the whole instance) and her CV library. Keep the
+instance on a local disk, not a network share or cloud-synced folder — SQLite's WAL files
+don't survive those. Add `--profile mcp` to also run the MCP server (localhost only).
 
 ## Demo Mode
 

@@ -48,7 +48,7 @@ def list_jobs(
 
     status: draft | queued | running | succeeded | failed | cancelled
     kind: analyse_job | submit_job | generate_cv | run_coverage | run_judges |
-          regenerate_section | generate_cover_letter | generate_answers
+          regenerate_section | generate_cover_letter | generate_answers | gmail_sync
 
     list_jobs(status="draft") is the review queue: requests waiting on the applicant.
     """
