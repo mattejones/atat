@@ -39,6 +39,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from pipeline.llm_compat import with_temperature
 from pipeline.config import (
     LOGS_PATH,
     EXPERIENCE_PATH, PERSONAS_PATH, SKILLS_PATH, META_PATH, PROMPTS_PATH,
@@ -371,7 +372,7 @@ def _call_anthropic(system: str, user: str) -> str:
         messages=[{"role": "user", "content": user}],
     )
     try:
-        message = client.messages.create(temperature=TEMPERATURE, **base_kwargs)
+        message = client.messages.create(**with_temperature(client.messages.create, TEMPERATURE), **base_kwargs)
     except anthropic.BadRequestError as e:
         # Some newer models reject an explicit `temperature` value outright
         # ("temperature is deprecated for this model") instead of just

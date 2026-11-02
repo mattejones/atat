@@ -24,6 +24,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 
+from pipeline.llm_compat import with_temperature
 from pipeline.config import (
     LOGS_PATH, PERSONAL_PROMPTS_PATH,
     EXPERIENCE_PATH, PERSONAS_PATH, SKILLS_PATH, META_PATH,
@@ -326,7 +327,7 @@ def _call_anthropic(system: str, user: str) -> str:
         return "thinking.type.enabled" in s or ("thinking" in s and "adaptive" in s)
 
     try:
-        message = _stream_message(client, temperature=effective_temperature, **base_kwargs)
+        message = _stream_message(client, **with_temperature(client.messages.stream, effective_temperature), **base_kwargs)
     except anthropic.BadRequestError as e:
         if _is_temperature_deprecated(e):
             # Some newer models reject an explicit `temperature` value outright
@@ -351,7 +352,7 @@ def _call_anthropic(system: str, user: str) -> str:
                 adaptive_kwargs["thinking"] = {"type": "adaptive"}
                 adaptive_kwargs["output_config"] = {"effort": "high"}
             try:
-                message = _stream_message(client, temperature=effective_temperature, **adaptive_kwargs)
+                message = _stream_message(client, **with_temperature(client.messages.stream, effective_temperature), **adaptive_kwargs)
             except anthropic.BadRequestError as e2:
                 if _is_temperature_deprecated(e2):
                     message = _stream_message(client, **adaptive_kwargs)

@@ -1,4 +1,6 @@
-anthropic>=0.40.0
+# Tested against 0.97.x. 2.x removed `temperature` from messages.create/stream (see
+# pipeline/llm_compat.py); stay below 1 until the rest of the code is checked against it.
+anthropic>=0.97.0,<1
 openai>=1.50.0
 watchdog>=4.0.0
 python-dotenv>=1.0.0

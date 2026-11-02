@@ -9,6 +9,7 @@ Both can be edited without touching source code.
 import logging
 from typing import Optional
 
+from pipeline.llm_compat import with_temperature
 from pipeline.config import (
     LLM_PROVIDER, RETRY_MODEL,
     ANTHROPIC_API_KEY, OPENAI_API_KEY,
@@ -81,7 +82,7 @@ def _call_anthropic(system: str, user: str) -> tuple[str, int, int]:
         messages=[{"role": "user", "content": user}],
     )
     try:
-        message = client.messages.create(temperature=TEMPERATURE, **base_kwargs)
+        message = client.messages.create(**with_temperature(client.messages.create, TEMPERATURE), **base_kwargs)
     except anthropic.BadRequestError as e:
         # Some newer models reject an explicit `temperature` value outright
         # ("temperature is deprecated for this model") rather than just

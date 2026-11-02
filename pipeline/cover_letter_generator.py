@@ -21,6 +21,7 @@ Returns (cover_letter_markdown: str, brief: Optional[ResearchBrief]).
 import logging
 from typing import Optional
 
+from pipeline.llm_compat import with_temperature
 from pipeline.config import (
     ANTHROPIC_API_KEY,
     LLM_MODEL,
@@ -231,7 +232,7 @@ def _call_anthropic(system: str, user: str) -> str:
     )
 
     try:
-        message = client.messages.create(temperature=TEMPERATURE, **base_kwargs)
+        message = client.messages.create(**with_temperature(client.messages.create, TEMPERATURE), **base_kwargs)
     except anthropic.BadRequestError as e:
         # Some newer models reject an explicit `temperature` value outright
         # ("temperature is deprecated for this model") instead of just
