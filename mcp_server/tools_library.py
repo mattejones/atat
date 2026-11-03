@@ -23,18 +23,23 @@ from typing import Optional
 
 from mcp_server.app import mcp
 from pipeline.config import EXPERIENCE_PATH, META_PATH, PERSONAS_PATH, SKILLS_PATH
+from pipeline.library import experience_files
+from pipeline.privacy import read_library_file
 
 MAX_SEARCH_RESULTS = 50
 
 
-def _safe_read(base: Path, filename: str) -> str:
-    """Resolve filename under base and read it — rejects any path escaping base."""
+def _safe_read(base: Path, filename: str, include_private: bool = False) -> str:
+    """
+    Resolve filename under base and read it — rejects any path escaping base. Private
+    sections (pipeline/privacy.py) are hidden unless include_private is set.
+    """
     candidate = (base / filename).resolve()
     if base.resolve() not in candidate.parents and candidate != base.resolve():
         raise ValueError(f"Invalid filename: {filename!r}")
     if not candidate.exists():
         raise ValueError(f"Not found: {filename!r}")
-    return candidate.read_text(encoding="utf-8")
+    return read_library_file(candidate, include_private=include_private)
 
 
 @mcp.tool()
@@ -48,17 +53,22 @@ def list_experience_entries() -> list[dict]:
     """
     if not EXPERIENCE_PATH.exists():
         return []
-    files = sorted(EXPERIENCE_PATH.glob("*.md"), reverse=True)
+    files = experience_files(EXPERIENCE_PATH)
     return [{"filename": f.name, "label": f.stem.replace("_", " · ").replace("-", " ")} for f in files]
 
 
 @mcp.tool()
-def get_experience_entry(filename: str) -> str:
+def get_experience_entry(filename: str, include_private: bool = False) -> str:
     """
     Return the raw markdown content of one experience library entry.
     filename must be one returned by list_experience_entries().
+
+    Sections the person marked private (a "## Private" heading or a <!-- private --> block)
+    are hidden by default, because they must never reach a CV. Set include_private=true only
+    for the person's own reference, such as interview preparation. Never copy private
+    content into a CV, cover letter, application answer or generation note.
     """
-    return _safe_read(EXPERIENCE_PATH, filename)
+    return _safe_read(EXPERIENCE_PATH, filename, include_private=include_private)
 
 
 @mcp.tool()
@@ -85,7 +95,7 @@ def get_skills() -> str:
     """Return the raw skills inventory (skills/skills.md) — the full canonical skills list, not tailored to any one application."""
     if not SKILLS_PATH.exists():
         raise ValueError(f"Skills file not found: {SKILLS_PATH}")
-    return SKILLS_PATH.read_text(encoding="utf-8")
+    return read_library_file(SKILLS_PATH)
 
 
 @mcp.tool()
@@ -93,7 +103,7 @@ def get_meta() -> str:
     """Return contact/identity info (meta/meta.md) — name, email, phone, location, links used to compose every CV's header."""
     if not META_PATH.exists():
         raise ValueError(f"Meta file not found: {META_PATH}")
-    return META_PATH.read_text(encoding="utf-8")
+    return read_library_file(META_PATH)
 
 
 @mcp.tool()
@@ -114,7 +124,7 @@ def search_library(query: str, limit: int = 20) -> list[dict]:
 
     sources: list[tuple[str, Path]] = []
     if EXPERIENCE_PATH.exists():
-        sources += [("experience", f) for f in sorted(EXPERIENCE_PATH.glob("*.md"), reverse=True)]
+        sources += [("experience", f) for f in experience_files(EXPERIENCE_PATH)]
     if PERSONAS_PATH.exists():
         sources += [("persona", f) for f in sorted(PERSONAS_PATH.glob("*.md"))]
     if SKILLS_PATH.exists():
@@ -124,7 +134,7 @@ def search_library(query: str, limit: int = 20) -> list[dict]:
         if len(results) >= limit:
             break
         try:
-            text = path.read_text(encoding="utf-8")
+            text = read_library_file(path)     # private sections are never searchable
         except OSError:
             continue
         for line in text.splitlines():

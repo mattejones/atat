@@ -20,8 +20,11 @@ this order regardless of dict insertion order.
 """
 
 import logging
+import re
 from pathlib import Path
 from typing import Union
+
+from pipeline.config import EARLIER_EXPERIENCE_HEADING
 
 log = logging.getLogger(__name__)
 
@@ -45,6 +48,18 @@ SECTION_LABELS = {
 
 
 # ── Section splitter ──────────────────────────────────────────────────────────
+
+_STATUS_WORDS = re.compile(r"\b(completed|graduated|awarded|finished|obtained)\b[\s,:-]*", re.IGNORECASE)
+
+
+def _clean_years(years: str) -> str:
+    """
+    Education years are a year, a range, or "Expected YYYY". The model sometimes fills the slot
+    with a status ("Completed", "Graduated"), which reads as filler on a CV; drop it.
+    """
+    cleaned = _STATUS_WORDS.sub("", str(years or "")).strip(" ,;-")
+    return cleaned or str(years or "").strip()
+
 
 def split_cv_sections(cv_data: dict) -> dict:
     """
@@ -82,7 +97,8 @@ def split_cv_sections(cv_data: dict) -> dict:
         experience_lines.append("")
 
     if earlier:
-        experience_lines.append("### Earlier technical experience")
+        # Per-instance wording (EARLIER_EXPERIENCE_HEADING): not every career is "technical".
+        experience_lines.append(f"### {EARLIER_EXPERIENCE_HEADING}")
         experience_lines.append("")
         experience_lines.append(earlier)
         experience_lines.append("")
@@ -102,10 +118,13 @@ def split_cv_sections(cv_data: dict) -> dict:
     for edu in cv_data.get("education", []):
         education_lines.append(
             f"**{edu.get('degree', '')}** -- "
-            f"{edu.get('institution', '')}, {edu.get('years', '')}"
+            f"{edu.get('institution', '')}, {_clean_years(edu.get('years', ''))}"
         )
         if edu.get("subjects"):
             education_lines.append(f"*{edu['subjects']}*")
+        for honour in edu.get("honours") or []:
+            if str(honour).strip():
+                education_lines.append(f"- {str(honour).strip()}")
         education_lines.append("")
     sections[EDUCATION] = "\n".join(education_lines).strip()
 

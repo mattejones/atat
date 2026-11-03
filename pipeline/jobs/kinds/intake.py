@@ -100,6 +100,13 @@ class SubmitJob(JobKind):
         "generation_notes": Param(str, help="Freeform guidance for this generation."),
     }
 
+    def check(self, ctx: JobContext, params: dict) -> None:
+        from pipeline.meta import meta_problems
+        # The CV header is built from META, so fail now rather than after a long LLM run.
+        problems = meta_problems()
+        if problems:
+            raise JobError(problems[0])
+
     def preview(self, ctx: JobContext, params: dict) -> Prompt:
         from pipeline.tailorer import assemble_user_message, build_system_prompt
         return Prompt(build_system_prompt(), assemble_user_message(params["jd_text"], params["generation_notes"]))

@@ -127,11 +127,12 @@ def _library_blocks() -> list[tuple[str, str]]:
     what actually varies per request: the job ad, spec, notes, flags, previous text.
     """
     from pipeline.config import EXPERIENCE_PATH, META_PATH, SKILLS_PATH
+    from pipeline.library import experience_files
     from pipeline.tailorer import load_experience_files, load_persona_files, load_text
 
     return [
         ("experience library", load_experience_files()),
-        ("experience library", "\n".join(load_text(p) for p in sorted(EXPERIENCE_PATH.glob("*.md"), reverse=True))),
+        ("experience library", "\n".join(load_text(p) for p in experience_files(EXPERIENCE_PATH))),
         ("personas", load_persona_files()),
         ("skills inventory", load_text(SKILLS_PATH)),
         ("meta", load_text(META_PATH)),

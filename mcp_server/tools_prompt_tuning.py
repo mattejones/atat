@@ -13,18 +13,20 @@ Two different mechanisms, don't confuse them:
   personal to this machine, already documented for exactly this ("DO NOT
   INCLUDE rules", "style guidance") — it just had no MCP access before now.
 
-Note: regenerate_section (the retry path, pipeline.retry) loads a different,
-narrower system prompt and does NOT include personal_additions.md — a rule
-added here affects the next fresh submit_job call, not a retry already in
-progress. Deliberately left that way; not an MCP-layer concern.
+regenerate_section (the retry path, pipeline.retry) also appends personal_additions.md to
+its system prompt, so a rule added here applies to the next retry as well. The file lives in
+this instance's own folder (ATAT_HOME/prompts), the same place the generator reads it from —
+not the repo's shared prompts/ directory, which holds only the prompts every instance shares.
 """
 
 from datetime import datetime
 
 from mcp_server.app import mcp
-from pipeline.config import PROMPTS_PATH
+from pipeline.config import PERSONAL_PROMPTS_PATH
 
-_ADDITIONS_PATH = PROMPTS_PATH / "personal_additions.md"
+# Must be the path pipeline.tailorer.load_personal_additions() reads. Under ATAT_HOME that is
+# the instance folder, not the repo; writing anywhere else saves a rule that is never loaded.
+_ADDITIONS_PATH = PERSONAL_PROMPTS_PATH / "personal_additions.md"
 
 _TEMPLATE = """\
 # Personal Prompt Additions

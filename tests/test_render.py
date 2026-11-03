@@ -184,3 +184,48 @@ def test_bullet_marker_dot_is_geometrically_centered_on_the_text_line(tmp_path):
         f"bullet dot center ({marker_center}pt) is not aligned with the "
         f"text line center ({body_center}pt)"
     )
+
+
+# ── Profile paragraphs, education honours, and the style settings must be valid Typst ──────────
+
+def _compile(doc: str, tmp_path) -> int:
+    typst_lib = pytest.importorskip("typst")
+    typ_path = tmp_path / "cv.typ"
+    typ_path.write_text(doc, encoding="utf-8")
+    pdf_path = tmp_path / "cv.pdf"
+    typst_lib.Compiler(
+        input=str(typ_path), root=str(tmp_path),
+        font_paths=[str(FONTS_DIR)], ignore_system_fonts=True,
+    ).compile(output=str(pdf_path), format="pdf")
+    return pdf_path.stat().st_size
+
+
+def _rich_cv() -> ParsedCV:
+    return ParsedCV(
+        name="Jane Doe",
+        contact="jane@example.com · +44 7700 900000 · Leeds, UK · "
+                "https://www.linkedin.com/in/jane-doe/ · https://jane.example/",
+        profile=["First paragraph about who she is.", "Second paragraph with the evidence."],
+        experience=[ExperienceEntry("Acme", "Head of Ops", "Jan 2020 - Present", "Context.", ["A bullet that is long enough."])],
+        skills=[("Ops", "Planning, Rota design")],
+        education=[EducationEntry("BA Hons", "Western University", "Expected 2026", "Psychology",
+                                  honours=["Dean's list 2012", "Vice-Chancellor scholarship"])],
+        certifications=["First Aid"],
+    )
+
+
+@pytest.mark.parametrize("rule", ["full", "short", "none"])
+@pytest.mark.parametrize("underline", [True, False])
+def test_every_style_setting_compiles(tmp_path, monkeypatch, rule, underline):
+    import pipeline.config as config
+
+    monkeypatch.setattr(config, "HEADING_RULE", rule)
+    monkeypatch.setattr(config, "LINK_UNDERLINE", underline)
+    assert _compile(build_typst_doc(_rich_cv()), tmp_path) > 0
+
+
+def test_two_paragraph_profile_compiles_and_shows_both(tmp_path):
+    typst_lib = pytest.importorskip("typst")
+    doc = build_typst_doc(_rich_cv())
+    assert doc.count("#par(leading:6.5pt)") == 2
+    assert _compile(doc, tmp_path) > 0

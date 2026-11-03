@@ -85,8 +85,25 @@ MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS",   "8192"))
 THINKING_BUDGET   = int(os.getenv("THINKING_BUDGET",     "8000"))
 ENABLE_CACHING    = os.getenv("ENABLE_CACHING",  "true").lower() == "true"
 
+# ── CV shape (per instance) ───────────────────────────────────────────────────
+# PROFILE_PARAGRAPHS / PROFILE_WORDS_MIN / PROFILE_WORDS_MAX — the profile's shape. It is written
+#   into the generation prompt and checked by the deterministic judge. Default: two paragraphs,
+#   80-120 words in total.
+# EARLIER_EXPERIENCE_HEADING — heading over the compressed pre-main-roles paragraph.
+PROFILE_PARAGRAPHS         = int(os.getenv("PROFILE_PARAGRAPHS", "2"))
+PROFILE_WORDS_MIN          = int(os.getenv("PROFILE_WORDS_MIN",  "80"))
+PROFILE_WORDS_MAX          = int(os.getenv("PROFILE_WORDS_MAX",  "120"))
+EARLIER_EXPERIENCE_HEADING = os.getenv("EARLIER_EXPERIENCE_HEADING", "Earlier experience").strip() or "Earlier experience"
+
 # ── Rendering ─────────────────────────────────────────────────────────────────
 RENDER_PDF = os.getenv("RENDER_PDF", "true").lower() == "true"
+# HEADING_RULE  — the rule beside each section heading in the PDF: none | short | full.
+#   "full" (a line across the page, beside the title) is the original look.
+# LINK_UNDERLINE — underline links in the PDF (colour always marks them).
+HEADING_RULE   = os.getenv("HEADING_RULE", "full").strip().lower()
+if HEADING_RULE not in ("none", "short", "full"):
+    HEADING_RULE = "full"
+LINK_UNDERLINE = os.getenv("LINK_UNDERLINE", "true").lower() == "true"
 
 # ── Scheduler / auto-ghost ────────────────────────────────────────────────────
 # AUTO_GHOST_ENABLED   — whether the background scheduler runs at all

@@ -5,12 +5,12 @@ Pipeline:
   1. Assemble library context (META, PERSONAS, EXPERIENCE, SKILLS) + JD
   2. Call LLM — model outputs a JSON object as text (with optional extended thinking)
   3. Parse and validate JSON — raise immediately on failure, no silent fallback
-  4. Convert dict -> canonical Markdown (cv_to_markdown) and ParsedCV (cv_data_to_parsed)
+  4. Convert dict -> canonical Markdown (cv_to_markdown)
   5. Write output folder: jd.txt, cv.md, reasoning.md (if present), run_meta.json
   6. Render cv.md -> cv.pdf via Typst (if RENDER_PDF is enabled)
 
 call_llm() returns a validated dict.
-Callers extract reasoning and pass remaining data to cv_to_markdown() / cv_data_to_parsed().
+Callers extract reasoning and pass remaining data to cv_to_markdown().
 
 System prompt loaded from prompts/cv_generation.md at call time.
 Personal additions loaded from prompts/personal_additions.md (gitignored, optional).
@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Optional
 
 from pipeline.llm_compat import with_temperature
+from pipeline.library import experience_files
 from pipeline.config import (
     LOGS_PATH, PERSONAL_PROMPTS_PATH,
     EXPERIENCE_PATH, PERSONAS_PATH, SKILLS_PATH, META_PATH,
@@ -32,12 +33,13 @@ from pipeline.config import (
     ANTHROPIC_API_KEY, OPENAI_API_KEY, TEMPERATURE,
     MAX_OUTPUT_TOKENS, THINKING_BUDGET, ENABLE_CACHING, RENDER_PDF,
 )
-from pipeline.parse_cv import ParsedCV, ExperienceEntry, EducationEntry
 
 log = logging.getLogger(__name__)
 
+# name and contact are deliberately not required from the model: the header comes from META
+# (pipeline/meta.py), so there is nothing for the model to get wrong or omit.
 _REQUIRED_FIELDS = {
-    "reasoning", "name", "contact", "profile",
+    "reasoning", "profile",
     "experience", "skills", "education", "certifications",
 }
 
@@ -77,16 +79,24 @@ def sanitise_text(text: str) -> str:
 # ── Library loaders ───────────────────────────────────────────────────────────
 
 def load_text(path: Path) -> str:
-    """Read a file and sanitise to ASCII. Covers library files and prompts."""
+    """
+    Read a file and sanitise to ASCII. Covers library files and prompts.
+
+    Library files have their private sections removed here (see pipeline/privacy.py), so
+    every prompt, preview and judge that reads the library through this function is protected.
+    """
     if path.exists():
         raw = path.read_text(encoding="utf-8")
+        from pipeline.privacy import in_library, strip_private
+        if in_library(path):
+            raw = strip_private(raw)
         return sanitise_text(raw)
     log.warning(f"Expected file not found: {path}")
     return ""
 
 
 def load_experience_files() -> str:
-    files = sorted(EXPERIENCE_PATH.glob("*.md"), reverse=True)
+    files = experience_files(EXPERIENCE_PATH)
     if not files:
         log.warning(f"No experience files found in {EXPERIENCE_PATH}")
     return "\n\n---\n\n".join(load_text(f) for f in files)
@@ -109,7 +119,8 @@ def load_personal_additions() -> str:
 
 
 def build_system_prompt() -> str:
-    base      = load_text(PROMPTS_PATH / "cv_generation.md")
+    from pipeline import profile_shape
+    base      = profile_shape.apply(load_text(PROMPTS_PATH / "cv_generation.md"))
     additions = load_personal_additions()
     if additions:
         return f"{base}\n\n---\n\n## PERSONAL ADDITIONS\n\n{additions}"
@@ -243,38 +254,27 @@ def parse_llm_response(raw: str) -> dict:
     if missing:
         raise ValueError(f"JSON response missing required fields: {sorted(missing)}")
 
-    # Contact sub-schema. Checked here rather than trusted, because a missing contact key
-    # is invisible downstream: compose_cv_markdown builds the header from a fixed list and
-    # silently drops anything it does not know about. The personal website went missing from
-    # CVs for months exactly this way, despite a standing "no exceptions" rule requiring it.
-    # An empty header field produces no error, no warning, and no output. So: fail loudly.
-    contact = data.get("contact")
-    if not isinstance(contact, dict):
-        raise ValueError(f"contact must be an object, got {type(contact).__name__}")
-
-    missing_contact = [
-        k for k in ("email", "location", "website")
-        if not str(contact.get(k, "")).strip()
-    ]
-    if missing_contact:
-        raise ValueError(
-            f"contact is missing required field(s): {missing_contact}. "
-            "These are populated from META's Contact Information and must always be present."
-        )
-
     return data
 
 
 # ── LLM clients ───────────────────────────────────────────────────────────────
 
 def call_llm(system: str, user: str) -> dict:
+    # Fail in seconds, not after a multi-minute run, if the header can't be built.
+    from pipeline.meta import apply_meta_header, load_meta, meta_problems
+    meta = load_meta()
+    problems = meta_problems(meta)
+    if problems:
+        raise ValueError(problems[0])
+
     if LLM_PROVIDER == "anthropic":
         raw = _call_anthropic(system, user)
     elif LLM_PROVIDER == "openai":
         raw = _call_openai(system, user)
     else:
         raise ValueError(f"Unknown LLM_PROVIDER: {LLM_PROVIDER!r}")
-    return parse_llm_response(raw)
+    # The header (name and contact) comes from META, never from the model.
+    return apply_meta_header(parse_llm_response(raw), meta)
 
 
 def _stream_message(client, **kwargs):
@@ -397,109 +397,10 @@ def _call_openai(system: str, user: str) -> str:
 # ── Structured -> Markdown ────────────────────────────────────────────────────
 
 def cv_to_markdown(cv_data: dict) -> str:
-    lines = []
-    lines.append(f"# {cv_data.get('name', '')}")
-    contact = cv_data.get('contact', {})
-    contact_parts = [
-        contact.get('email', ''),
-        contact.get('phone', ''),
-        contact.get('location', ''),
-        contact.get('linkedin', ''),
-        contact.get('website', ''),
-    ]
-    lines.append(' · '.join(p for p in contact_parts if p))
-    lines += ['', '---', '']
-
-    lines += ['## Profile', '', cv_data.get('profile', ''), '', '---', '']
-
-    lines += ['## Experience', '']
-    for exp in cv_data.get('experience', []):
-        lines.append(
-            f"### {exp.get('company', '')} -- {exp.get('role', '')} | {exp.get('dates', '')}"
-        )
-        lines.append('')
-        if exp.get('context'):
-            lines.append(f"*{exp['context']}*")
-            lines.append('')
-        for bullet in exp.get('bullets', []):
-            lines.append(f"- {bullet}")
-        lines += ['', '---', '']
-
-    earlier = cv_data.get('earlier_experience', '')
-    if earlier:
-        lines += ['### Earlier technical experience', '', earlier, '', '---', '']
-
-    lines += ['## Skills', '']
-    for skill in cv_data.get('skills', []):
-        lines.append(f"**{skill.get('category', '')}:** {skill.get('items', '')}")
-    lines += ['', '---', '']
-
-    lines += ['## Education', '']
-    for edu in cv_data.get('education', []):
-        lines.append(
-            f"**{edu.get('degree', '')}** -- {edu.get('institution', '')}, {edu.get('years', '')}"
-        )
-        if edu.get('subjects'):
-            lines.append(f"*{edu['subjects']}*")
-        lines.append('')
-    lines += ['---', '']
-
-    lines += ['## Certifications', '']
-    for cert in cv_data.get('certifications', []):
-        lines.append(f"- {cert}")
-
-    return '\n'.join(lines)
-
-
-# ── Structured -> ParsedCV ────────────────────────────────────────────────────
-
-def cv_data_to_parsed(cv_data: dict) -> ParsedCV:
-    contact = cv_data.get('contact', {})
-    contact_str = ' · '.join(filter(None, [
-        contact.get('email', ''),
-        contact.get('phone', ''),
-        contact.get('location', ''),
-        contact.get('linkedin', ''),
-        contact.get('website', ''),
-    ]))
-
-    experience: list[ExperienceEntry] = []
-    for e in cv_data.get('experience', []):
-        experience.append(ExperienceEntry(
-            company=e.get('company', ''),
-            role=e.get('role', ''),
-            dates=e.get('dates', ''),
-            context=e.get('context'),
-            bullets=e.get('bullets', []),
-        ))
-
-    earlier = cv_data.get('earlier_experience', '')
-    if earlier:
-        experience.append(ExperienceEntry(
-            company='Earlier technical experience',
-            role='', dates='', context=None,
-            bullets=[earlier],
-        ))
-
-    return ParsedCV(
-        name=cv_data.get('name', ''),
-        contact=contact_str,
-        profile=cv_data.get('profile', ''),
-        experience=experience,
-        skills=[
-            (s.get('category', ''), s.get('items', ''))
-            for s in cv_data.get('skills', [])
-        ],
-        education=[
-            EducationEntry(
-                degree=e.get('degree', ''),
-                institution=e.get('institution', ''),
-                years=e.get('years', ''),
-                subjects=e.get('subjects'),
-            )
-            for e in cv_data.get('education', [])
-        ],
-        certifications=cv_data.get('certifications', []),
+    """Compose a full cv.md from a generated cv_data dict, using the same composer as the app."""
+    from pipeline.sections import compose_cv_markdown, split_cv_sections
+    return compose_cv_markdown(
+        cv_data.get("name", ""), cv_data.get("contact", {}), split_cv_sections(cv_data),
     )
 
 

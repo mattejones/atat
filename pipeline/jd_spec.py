@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Optional
 
 from pipeline.llm_compat import with_temperature
+from pipeline.library import experience_files
 from pipeline.config import (
     LOGS_PATH,
     EXPERIENCE_PATH, PERSONAS_PATH, SKILLS_PATH, META_PATH, PROMPTS_PATH,
@@ -469,7 +470,7 @@ You may cite ONLY these references, copied exactly. Any other reference is inval
 ---
 
 ## EXPERIENCE LIBRARY (the evidence itself)
-{chr(10).join(load_text(p) for p in sorted(EXPERIENCE_PATH.glob("*.md"), reverse=True))}
+{chr(10).join(load_text(p) for p in experience_files(EXPERIENCE_PATH))}
 
 ---
 

@@ -104,6 +104,16 @@ def esc_display(t: str) -> str:
 _DOT_SEP = f'#h(4pt)#text(fill:rgb("{P["accent2"]}"))[·]#h(4pt)'
 
 
+def _display_url(url: str) -> str:
+    """
+    How a link reads on the page: no scheme, no www., no trailing slash, so a long LinkedIn
+    address fits on one line. The link target stays the full URL.
+    """
+    shown = re.sub(r'^https?://', '', url.strip(), flags=re.IGNORECASE)
+    shown = re.sub(r'^www\.', '', shown, flags=re.IGNORECASE)
+    return shown.rstrip('/')
+
+
 def _build_contact_line(contact: str) -> str:
     parts    = [p.strip() for p in contact.split('·')]
     rendered = []
@@ -118,7 +128,7 @@ def _build_contact_line(contact: str) -> str:
             rendered.append(f'#link("tel:{tel}")[{esc_display(p)}]')
         elif 'linkedin' in p.lower():
             url = p if p.startswith('http') else 'https://' + p
-            rendered.append(f'#link("{esc_url(url)}")[{esc_display(p)}]')
+            rendered.append(f'#link("{esc_url(url)}")[{esc_display(_display_url(p))}]')
         elif p.startswith(('http://', 'https://')) or (
             re.match(r'^[\w.-]+\.[a-z]{2,}(/\S*)?$', p) and ' ' not in p
         ):
@@ -126,20 +136,52 @@ def _build_contact_line(contact: str) -> str:
             # plain-text branch below, because the bare-domain regex does not match ':'
             # or '/'. They rendered as dead text in the PDF. Match them explicitly.
             url = p if p.startswith('http') else 'https://' + p
-            rendered.append(f'#link("{esc_url(url)}")[{esc_display(p)}]')
+            rendered.append(f'#link("{esc_url(url)}")[{esc_display(_display_url(p))}]')
         else:
             rendered.append(esc(p))
     return _DOT_SEP.join(rendered)
 
 
+def _link_rule() -> str:
+    """The global Typst rule for links. Colour always marks a link; underline is a setting."""
+    import pipeline.config as cfg
+    accent, accent2 = P["accent"], P["accent2"]
+    if cfg.LINK_UNDERLINE:
+        return (
+            f'#show link: it => text(fill: rgb("{accent}"))'
+            f'[#underline(offset:2pt,stroke:0.5pt+rgb("{accent2}"))[#it]]'
+        )
+    return f'#show link: it => text(fill: rgb("{accent}"))[#it]'
+
+
 # ── Section header ─────────────────────────────────────────────────────────────
 
 def _sh(title: str) -> str:
+    """
+    Section heading. The rule beside it is a setting (HEADING_RULE):
+      full  - a line across the page, beside the title (the original look)
+      short - a short fixed rule under the title
+      none  - the letter-spaced title alone
+    """
+    import pipeline.config as cfg
+    label = (
+        f'#text(font:"Poppins",size:7.5pt,weight:"semibold",'
+        f'fill:rgb("{P["accent"]}"),tracking:1.8pt)[#upper("{title}")]'
+    )
+    if cfg.HEADING_RULE == "none":
+        return f'#block(above: 0pt, below: 8pt)[{label}]'
+    if cfg.HEADING_RULE == "short":
+        return (
+            f'#block(above: 0pt, below: 8pt)[\n'
+            f'  {label}\n'
+            f'  #v(3pt)\n'
+            f'  #line(length:24pt,stroke:0.7pt+rgb("{P["accent2"]}"))\n'
+            f']'
+        )
     return (
         f'#block(above: 0pt, below: 8pt)[\n'
         f'  #grid(columns:(auto,1fr),align:(left+horizon,left+horizon),column-gutter:9pt,\n'
-        f'    [#text(font:"Poppins",size:7.5pt,weight:"semibold",'
-        f'fill:rgb("{P["accent"]}"),tracking:1.8pt)[#upper("{title}")]],\n'
+        f'    [{label}],\n'
         f'    [#line(length:100%,stroke:0.7pt+rgb("{P["accent2"]}"))])\n'
         f']'
     )
@@ -220,13 +262,19 @@ def _render_edu(e: EducationEntry) -> str:
     deg, inst, yrs, subj = esc(e.degree), esc(e.institution), esc(e.years), esc(e.subjects or '')
     lines = [
         f'#text(font:"Poppins",size:9.5pt,weight:"semibold",fill:rgb("{P["body"]}"))[{deg}]',
-        '#v(3pt)',
+        '#v(5pt)',   # the institution line sat too tight under the degree title at 3pt
         f'#text(font:"Poppins",size:8.5pt,weight:"regular",fill:rgb("{P["second"]}"))[{inst} \u00b7 {yrs}]',
     ]
     if subj:
         lines += [
             '#v(2pt)',
             f'#text(font:"Poppins",size:8.5pt,style:"italic",fill:rgb("{P["second"]}"))[{subj}]',
+        ]
+    # Prizes, scholarships and merit lists: one short line each, not folded into the subjects.
+    for h in getattr(e, 'honours', None) or []:
+        lines += [
+            '#v(2pt)',
+            f'#text(font:"Poppins",size:8.5pt,weight:"regular",fill:rgb("{P["second"]}"))[{esc(h)}]',
         ]
     lines.append('#v(10pt)')
     return '\n'.join(lines)
@@ -288,13 +336,14 @@ def _build_doc_metadata(cv: ParsedCV, company: str = "") -> str:
 def build_typst_doc(cv: ParsedCV, company: str = "") -> str:
     ne = esc(cv.name)
     ct = _build_contact_line(cv.contact)
-    pe = esc(cv.profile)
-
     metadata = _build_doc_metadata(cv, company)
 
-    profile_block = (
+    # Every profile paragraph is its own #par. The global `#set par(spacing: 0pt)` means a
+    # blank line inside one #par would not separate them, so the gap is explicit.
+    profile_block = '\n#v(6pt)\n'.join(
         f'#par(leading:6.5pt)[#text(font:"Poppins",size:9.5pt,weight:"regular",'
-        f'fill:rgb("{P["body"]}"))[{pe}]]'
+        f'fill:rgb("{P["body"]}"))[{esc(p)}]]'
+        for p in cv.profile
     )
 
     exp_entries = [_render_exp(e) for e in cv.experience]
@@ -352,8 +401,7 @@ def build_typst_doc(cv: ParsedCV, company: str = "") -> str:
         ')',
         '#set par(leading: 5.5pt, spacing: 0pt)',
         f'#set text(font: "Poppins", size: 9.5pt, fill: rgb("{P["body"]}"))',
-        f'#show link: it => text(fill: rgb("{P["accent"]}"))'
-        f'[#underline(offset:2pt,stroke:0.5pt+rgb("{P["accent2"]}"))[#it]]',
+        _link_rule(),
         '',
         f'#v(-{PAGE_TOP})',
         f'#block(width: 100%, fill: rgb("{P["hdr_bg"]}"), above: 0pt, below: 0pt)[',
@@ -513,8 +561,7 @@ def build_cover_letter_typst_doc(
         ")",
         "#set par(leading: 7pt, spacing: 0pt)",
         f'#set text(font: "Poppins", size: 10pt, fill: rgb("{P["body"]}"))',
-        f'#show link: it => text(fill: rgb("{P["accent"]}"))'
-        f'[#underline(offset:2pt,stroke:0.5pt+rgb("{P["accent2"]}"))[#it]]',
+        _link_rule(),
         "",
         header_block,
         rule_block,

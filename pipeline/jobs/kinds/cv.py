@@ -32,6 +32,11 @@ class GenerateCV(JobKind):
     }
 
     def check(self, ctx: JobContext, params: dict) -> None:
+        from pipeline.meta import meta_problems
+        # The CV header is built from META, so fail now rather than after a long LLM run.
+        problems = meta_problems()
+        if problems:
+            raise JobError(problems[0])
         app = ctx.application
         if not load_spec(app):
             raise JobError(

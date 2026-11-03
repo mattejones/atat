@@ -32,7 +32,8 @@ _DEFAULT_SECTION_INSTRUCTION = (
 def _load_section_instruction(section_name: str) -> str:
     """Load return instruction for a section from prompts/retry_sections/{name}.md."""
     path = _RETRY_SECTIONS_PATH / f"{section_name}.md"
-    content = load_text(path)
+    from pipeline import profile_shape
+    content = profile_shape.apply(load_text(path))     # fills the {{PROFILE_*}} placeholders
     return content.strip() if content.strip() else _DEFAULT_SECTION_INSTRUCTION
 
 

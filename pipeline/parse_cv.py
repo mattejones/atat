@@ -11,8 +11,10 @@ Common deviations handled:
 """
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
+
+from pipeline.config import EARLIER_EXPERIENCE_HEADING
 
 
 # Year range as it appears in education entries.
@@ -20,7 +22,8 @@ from typing import Optional
 # instructs the generator to use plain hyphens rather than en/em dashes.
 # The previous pattern (\d{4}[-]?\d{0,4}) had no whitespace allowance and
 # silently truncated "2014 - 2016" to "2014", dropping the end year.
-_YEAR_RANGE = r'\d{4}(?:\s*[-\u2013\u2014]\s*(?:\d{4}|[Pp]resent))?'
+# "Expected 2026" marks study not yet finished.
+_YEAR_RANGE = r'(?:[Ee]xpected\s+)?\d{4}(?:\s*[-\u2013\u2014]\s*(?:\d{4}|[Pp]resent))?'
 
 
 @dataclass
@@ -38,17 +41,23 @@ class EducationEntry:
     institution: str
     years: str
     subjects: Optional[str]
+    honours: list[str] = field(default_factory=list)   # prizes, scholarships, merit lists
 
 
 @dataclass
 class ParsedCV:
     name: str
     contact: str
-    profile: str
+    profile: list[str]          # one entry per paragraph; every paragraph is rendered
     experience: list[ExperienceEntry]
     skills: list[tuple[str, str]]
     education: list[EducationEntry]
     certifications: list[str]
+
+    def __post_init__(self):
+        # Accept a plain string (callers and tests that predate multi-paragraph profiles).
+        if isinstance(self.profile, str):
+            self.profile = [p.strip() for p in re.split(r'\n\s*\n', self.profile) if p.strip()]
 
 
 # Section name normalisation — maps model variants to canonical names
@@ -137,11 +146,10 @@ def parse_cv(markdown: str) -> ParsedCV:
     if current_section is not None:
         sections[current_section] = '\n'.join(current_content).strip()
 
-    # ── Profile — first non-empty paragraph only ───────────────────────────────
-    profile_raw = sections.get('Profile', '').replace('---', '').strip()
-    # If model produced multiple paragraphs, take only the first
-    profile_paragraphs = [p.strip() for p in re.split(r'\n\n+', profile_raw) if p.strip()]
-    profile = profile_paragraphs[0] if profile_paragraphs else profile_raw
+    # ── Profile — every paragraph ──────────────────────────────────────────────
+    # (Only a line that is just --- is a divider; a --- inside prose is left alone.)
+    profile_raw = re.sub(r'(?m)^\s*---\s*$', '', sections.get('Profile', '')).strip()
+    profile = [p.strip() for p in re.split(r'\n\s*\n', profile_raw) if p.strip()]
 
     # ── Experience ─────────────────────────────────────────────────────────────
     experience: list[ExperienceEntry] = []
@@ -159,8 +167,12 @@ def parse_cv(markdown: str) -> ParsedCV:
         dates       = date_match.group(1).strip() if date_match else ''
         title_part  = re.sub(r'\s*\|.*$', '', header).strip()
 
-        # Split company and role on em/en dash
-        company_role = re.split(r'\s*[—–-]{1,2}\s*', title_part, maxsplit=1)
+        # Split company and role on em/en dash. The earlier-experience heading is a title,
+        # not "Company -- Role", so a hyphen in a custom heading must not split it.
+        if title_part.lower() == EARLIER_EXPERIENCE_HEADING.lower():
+            company_role = [title_part]
+        else:
+            company_role = re.split(r'\s*[—–-]{1,2}\s*', title_part, maxsplit=1)
         company = company_role[0].strip() if company_role else title_part
         role    = company_role[1].strip() if len(company_role) > 1 else ''
 
@@ -270,10 +282,14 @@ def parse_cv(markdown: str) -> ParsedCV:
                 subjects = line.strip('*').strip()
                 break
 
+        honours = [
+            _strip_inline_bold(l[2:].strip()) for l in block_lines[1:] if l.startswith('- ')
+        ]
+
         if degree:
             education.append(EducationEntry(
                 degree=degree, institution=institution,
-                years=years, subjects=subjects,
+                years=years, subjects=subjects, honours=honours,
             ))
 
     # ── Certifications ─────────────────────────────────────────────────────────
