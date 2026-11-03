@@ -25,8 +25,24 @@ Response format:
       "id": "S1",
       "quote": "<verbatim text from the job ad — copy exactly>"
     }
-  ]
+  ],
+  "seniority": "ic | manager | head | director | exec"
 }
+
+## Seniority
+
+Set `seniority` to the level the ad is hiring for, judged from its title, who the role reports
+to, and how much it owns. Use exactly one of:
+
+- `ic`: an individual contributor, however senior (specialist, engineer, consultant, associate)
+- `manager`: leads a team or a function day to day (team lead, manager)
+- `head`: leads managers or owns a whole area (head of, senior manager, associate director)
+- `director`: owns a large remit or several areas (director, VP)
+- `exec`: sits on the executive team (chief officer, managing director, general manager)
+
+Use the ad's scope as well as its title ("Manager" of a whole region may be `head`). If the ad does
+not make the level reasonably clear, use null. The CV's opening register is matched to this
+level, so do not guess upward.
 
 ## The verbatim rule
 
@@ -86,7 +102,7 @@ For each requirement, list the library references that genuinely evidence it.
 A library reference is a heading path: `<experience-file>.md#<Achievement Heading>`,
 for example:
 
-    2022-2025_aircall_support-operations-manager.md#AI-Powered Knowledge Article Generation System
+    2022-2025_acme_operations-manager.md#Rota Redesign Programme
 
 You will be given an index of every valid reference. **You may only use references from
 that index, copied exactly.** References are validated on write. A reference not in the

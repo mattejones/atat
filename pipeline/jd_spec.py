@@ -55,6 +55,7 @@ log = logging.getLogger(__name__)
 # Tier thresholds, expressed as the fraction of MUST-HAVE requirements that map to
 # genuine library evidence. Deliberately blunt — this is a triage signal for deciding
 # where to spend effort across a batch, not a precision instrument.
+SENIORITY_LEVELS = ("ic", "manager", "head", "director", "exec")   # role level the ad is hiring for
 TIER_T1_MIN = 0.75      # strong fit — most must-haves genuinely evidenced
 TIER_T2_MIN = 0.45      # real stretch, but a credible application exists
                         # below TIER_T2_MIN -> T3
@@ -72,7 +73,7 @@ def build_library_index() -> dict[str, str]:
 
     A reference is a heading path into an experience file:
 
-        2022-2025_aircall_support-operations-manager.md#AI-Powered Knowledge Article Generation System
+        2022-2025_acme_operations-manager.md#Rota Redesign Programme
 
     Returns {reference: achievement_body}. The body is used for nothing at extraction
     time (the model sees the full library anyway) but is returned so callers can render
@@ -183,6 +184,12 @@ def validate_spec(spec: dict, jd_text: str, index: dict[str, str]) -> list[str]:
     if errors:
         return errors
 
+    level = spec.get("seniority")
+    if level is not None and str(level).strip().lower() not in SENIORITY_LEVELS:
+        errors.append(
+            f"seniority must be one of {list(SENIORITY_LEVELS)} or null, got {level!r}"
+        )
+
     seen_ids: set[str] = set()
 
     for key in ("requirements", "anti_patterns", "signals"):
@@ -269,6 +276,17 @@ def compute_tier(spec: dict) -> tuple[str, dict]:
 
 # ── Prompt rendering ──────────────────────────────────────────────────────────
 
+# How the CV's opening register should match the level the ad is hiring for. Written into
+# the brief; the generation prompt carries the general rule (never lead on tenure by default).
+SENIORITY_REGISTER = {
+    "ic":       "the craft and the quality of the work",
+    "manager":  "leading a team and what it delivered",
+    "head":     "leading managers and owning a whole area, with its outcomes",
+    "director": "scope, accountability and outcomes across a large remit",
+    "exec":     "scope, accountability and outcomes at the level of the whole organisation",
+}
+
+
 def spec_to_prompt_block(spec: dict) -> str:
     """
     Render the spec as the tailorer's brief.
@@ -279,6 +297,16 @@ def spec_to_prompt_block(spec: dict) -> str:
     steering the generation.
     """
     lines: list[str] = []
+
+    level = str(spec.get("seniority") or "").strip().lower()
+    if level in SENIORITY_REGISTER:
+        lines.append("### Role level")
+        lines.append("")
+        lines.append(
+            f"The ad is hiring at **{level}** level. Open the profile in that register: "
+            f"{SENIORITY_REGISTER[level]}. Do not open on years of tenure."
+        )
+        lines.append("")
 
     lines.append("### Requirements — the CV must visibly address each of these")
     lines.append("")
@@ -433,6 +461,10 @@ def extract_jd_spec(jd_text: str) -> dict:
         raise ValueError(f"Unknown LLM_PROVIDER: {LLM_PROVIDER!r}")
 
     spec   = _parse_response(raw)
+    # Seniority is a soft hint for the CV's register. An unexpected value from the model becomes
+    # null rather than failing an otherwise good (and expensive) extraction.
+    level = str(spec.get("seniority") or "").strip().lower()
+    spec["seniority"] = level if level in SENIORITY_LEVELS else None
     errors = validate_spec(spec, jd_text, index)
 
     if errors:
@@ -499,6 +531,8 @@ def render_spec_for_review(spec: dict) -> str:
         f"# JD spec — computed tier: {spec.get('computed_tier', '?')}",
         "",
     ]
+    if spec.get("seniority"):
+        lines += [f"Role level: **{spec['seniority']}**", ""]
 
     if stats.get("ratio") is not None:
         lines.append(
