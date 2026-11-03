@@ -153,8 +153,18 @@ def _render_spec(spec: dict) -> str:
 
 def build_prompt(cv_markdown: str, spec: dict) -> tuple[str, str]:
     """Assemble the (system, user) prompt for the coverage judge without calling a model."""
-    system = load_text(PROMPTS_PATH / "judge_coverage.md")
-    user = f"""## JOB SPECIFICATION
+    from pipeline.tailorer import load_personal_additions
+    system    = load_text(PROMPTS_PATH / "judge_coverage.md")
+    additions = load_personal_additions().strip()
+    # The candidate's own rules (terminology, what must not appear) are context for judging fairly:
+    # a requirement left uncovered on purpose is not a failure of the CV.
+    rules_block = f"""## THE CANDIDATE'S STANDING RULES (context only; do not treat as requirements)
+{additions}
+
+---
+
+""" if additions else ""
+    user = f"""{rules_block}## JOB SPECIFICATION
 {_render_spec(spec)}
 
 ---

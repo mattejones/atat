@@ -125,9 +125,13 @@ class Evaluation:
     empty:        bool                                        = False
 
 
-def evaluate(section_text: str, report_id: str = "") -> Evaluation:
+def evaluate(section_text: str, report_id: str = "", ctx=None) -> Evaluation:
     """
     Run Tier 1 and Tier 2 against a section text. No database access.
+
+    ctx is an optional JudgeContext (pipeline/judges/context.py): the section name, the job ad,
+    the library and the person's standing rules. It switches on the section-aware Tier 1 checks
+    and gives Tier 2 the same context.
 
     Split out from persist() so the Tier 2 model call happens with no connection open.
     run() used to insert the Tier 1 evaluation first and then call the model, holding a
@@ -138,7 +142,7 @@ def evaluate(section_text: str, report_id: str = "") -> Evaluation:
         return Evaluation(section_text=section_text, empty=True)
 
     log.info(f"[{report_id}] Running Tier 1 — deterministic judge")
-    t1_result = deterministic.run(section_text)
+    t1_result = deterministic.run(section_text, ctx)
     log.info(
         f"[{report_id}] Tier 1 complete — "
         f"passed={t1_result.passed}, flags={len(t1_result.flags)}, "
@@ -147,7 +151,7 @@ def evaluate(section_text: str, report_id: str = "") -> Evaluation:
 
     log.info(f"[{report_id}] Running Tier 2 — cheap LLM accuracy judge")
     try:
-        t2_result = cheap_llm.run(section_text)
+        t2_result = cheap_llm.run(section_text, ctx)
         log.info(
             f"[{report_id}] Tier 2 complete — "
             f"passed={t2_result.passed}, flags={len(t2_result.flags)}"

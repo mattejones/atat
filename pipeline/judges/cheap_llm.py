@@ -27,7 +27,7 @@ from pipeline.config import (
     ANTHROPIC_API_KEY, OPENAI_API_KEY,
     META_PATH, EXPERIENCE_PATH, SKILLS_PATH, PROMPTS_PATH,
 )
-from pipeline.tailorer import load_text, load_experience_files
+from pipeline.tailorer import load_text, load_experience_files, load_persona_files
 
 log = logging.getLogger(__name__)
 
@@ -56,11 +56,17 @@ class CheapLLMResult:
 
 def _load_source_material() -> str:
     meta       = load_text(META_PATH)
+    personas   = load_persona_files()
     experience = load_experience_files()
     skills     = load_text(SKILLS_PATH)
 
     return f"""## META (factual baseline)
 {meta}
+
+---
+
+## PERSONAS (how the candidate frames their own experience)
+{personas}
 
 ---
 
@@ -139,20 +145,44 @@ def _parse_response(raw: str) -> list[dict]:
 
 # ── Public entry point ────────────────────────────────────────────────────────
 
-def build_prompt(section_text: str) -> tuple[str, str]:
-    """Assemble the (system, user) prompt for the accuracy judge without calling a model."""
-    system = load_text(PROMPTS_PATH / "judge_accuracy.md")
+def build_prompt(section_text: str, ctx=None) -> tuple[str, str]:
+    """
+    Assemble the (system, user) prompt for the accuracy judge without calling a model.
+
+    The judge is given the person's own standing rules (personal_additions.md), because a claim
+    those rules license, or a term they require, is not an invention. When a JudgeContext has
+    the job ad, it is included too, labelled as NOT evidence: its only use is to recognise
+    claims that were lifted from it.
+    """
+    from pipeline.tailorer import load_personal_additions
+    system    = load_text(PROMPTS_PATH / "judge_accuracy.md")
+    additions = (ctx.personal_additions if ctx is not None else load_personal_additions()).strip()
+    jd_text   = (ctx.jd_text if ctx is not None else "").strip()
+
+    rules_block = f"""## THE CANDIDATE'S STANDING RULES (context, not evidence)
+{additions}
+
+---
+
+""" if additions else ""
+    ad_block = f"""## JOB AD (NOT evidence: use only to spot claims copied from it)
+{jd_text}
+
+---
+
+""" if jd_text else ""
+
     user = f"""## SOURCE PROFILE MATERIAL
 {_load_source_material()}
 
 ---
 
-## GENERATED CV SECTION (check this for accuracy)
+{rules_block}{ad_block}## GENERATED CV SECTION (check this for accuracy)
 {section_text}"""
     return system, user
 
 
-def run(section_text: str) -> CheapLLMResult:
+def run(section_text: str, ctx=None) -> CheapLLMResult:
     """
     Run the Tier 2 accuracy judge against a raw section text.
     System prompt is loaded from prompts/judge_accuracy.md at call time.
@@ -164,7 +194,7 @@ def run(section_text: str) -> CheapLLMResult:
             prompt_tokens=0, completion_tokens=0,
         )
 
-    system, user_message = build_prompt(section_text)
+    system, user_message = build_prompt(section_text, ctx)
 
     try:
         if LLM_PROVIDER == "anthropic":

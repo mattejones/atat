@@ -56,7 +56,7 @@ def build_constraint_block(
         excerpt   = flag.get("excerpt", "")
 
         lines.append(f"{i}. [{flag_type}] {message}")
-        if excerpt and flag.get("type") not in ("readability",):
+        if excerpt and flag.get("type") not in ("readability", "profile_shape"):   # excerpt is a whole paragraph or just a count
             lines.append(f'   Problematic text: "{excerpt}"')
         lines.append("")
 

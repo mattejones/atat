@@ -10,7 +10,8 @@ import { decodeEntities } from "@/lib/text";
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type FlagStatus = "active" | "dismissed" | "actioned";
-type FlagType   = "hotword" | "em_dash" | "sentence_length" | "readability" | "accuracy";
+type FlagType   = "hotword" | "em_dash" | "sentence_length" | "readability" | "accuracy"
+                | "profile_shape" | "ad_echo" | "repetition" | "fragment";
 
 interface Flag {
   id:               string;
@@ -64,6 +65,10 @@ const FLAG_STYLES: Record<FlagType, { bg: string; border: string; label: string;
   sentence_length: { bg: "bg-blue-100",   border: "border-blue-300",   label: "Sentence length", pill: "bg-blue-200 text-blue-800"     },
   readability:     { bg: "bg-purple-100", border: "border-purple-300", label: "Readability",     pill: "bg-purple-200 text-purple-800" },
   accuracy:        { bg: "bg-red-100",    border: "border-red-300",    label: "Accuracy",        pill: "bg-red-200 text-red-800"       },
+  profile_shape:   { bg: "bg-teal-100",   border: "border-teal-300",   label: "Profile shape",   pill: "bg-teal-200 text-teal-800"     },
+  ad_echo:         { bg: "bg-rose-100",   border: "border-rose-300",   label: "Copied from ad",  pill: "bg-rose-200 text-rose-800"     },
+  repetition:      { bg: "bg-lime-100",   border: "border-lime-300",   label: "Repetition",      pill: "bg-lime-200 text-lime-800"     },
+  fragment:        { bg: "bg-sky-100",    border: "border-sky-300",    label: "Fragment",        pill: "bg-sky-200 text-sky-800"       },
 };
 
 const defaultStyle = { bg: "bg-gray-100", border: "border-gray-300", label: "Issue", pill: "bg-gray-200 text-gray-800" };
@@ -75,7 +80,7 @@ function flagStyle(type: FlagType) {
 // ── Text annotator ────────────────────────────────────────────────────────────
 
 /**
- * Only readability flags are truly document-level — they are computed across
+ * Only readability and profile-shape flags are truly document-level — they are computed across
  * the full text and have no meaningful inline position.
  *
  * All other flag types (hotword, em_dash, sentence_length, accuracy) have
@@ -84,7 +89,7 @@ function flagStyle(type: FlagType) {
  * single-paragraph section that spans the full content).
  */
 function isDocumentLevel(flag: Flag): boolean {
-  return flag.type === "readability";
+  return flag.type === "readability" || flag.type === "profile_shape";
 }
 
 function buildAnnotatedSegments(

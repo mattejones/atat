@@ -57,14 +57,20 @@ class RunJudges(JobKind):
 
     def preview(self, ctx: JobContext, params: dict) -> Prompt:
         from pipeline.judges import cheap_llm
-        system, user = cheap_llm.build_prompt(_section_text(ctx.report))
+        from pipeline.judges.context import context_for
+        text = _section_text(ctx.report)
+        system, user = cheap_llm.build_prompt(text, context_for(ctx.application, ctx.report["section_name"]))
         return Prompt(system, user, notes=["Tier 1 is deterministic and sends nothing to a model; this is the tier 2 prompt."])
 
     def run(self, ctx: JobContext, params: dict, handle: JobHandle) -> dict:
         from pipeline.judges import orchestrator
+        from pipeline.judges.context import context_for
 
         report     = ctx.report
-        evaluation = orchestrator.evaluate(_section_text(report), report["id"])
+        text       = _section_text(report)
+        evaluation = orchestrator.evaluate(
+            text, report["id"], context_for(ctx.application, report["section_name"]),
+        )
 
         handle.checkpoint()
         with get_connection() as db:
@@ -140,7 +146,9 @@ class RegenerateSection(JobKind):
             db.execute("UPDATE reports SET status = 'rejected' WHERE id = ?", (report_id,))
 
         # The new report is committed; judge it with no connection open, then persist.
-        evaluation = orchestrator.evaluate(new_text, new_report_id)
+        from pipeline.judges.context import context_for
+        judge_ctx  = context_for(app, section_name, replace=(_section_text(report), new_text))
+        evaluation = orchestrator.evaluate(new_text, new_report_id, judge_ctx)
         with get_connection() as db:
             result = orchestrator.persist(db, new_report_id, new_attempt, evaluation)
 

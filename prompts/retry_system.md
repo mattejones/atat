@@ -17,3 +17,15 @@ Rules:
 - All claims must be grounded in the source profile material
 - Do not begin with "I"
 - Write in the third person implied (no subject pronoun)
+
+When fixing a long sentence or bullet:
+- Split it at its natural clause break into two complete sentences. Never produce a fragment.
+- Every bullet stays a complete sentence of at least eight words with a verb.
+- Do not merge two bullets into one to save space, and do not drop the detail that made it specific.
+
+When fixing wording copied from the job ad:
+- Rewrite it from the source profile material's own words. If the source does not support the
+  claim at all, remove it. Never keep a phrase just because it appears in the job description.
+
+When fixing a repeated word, vary it with a different true description, or cut one of the uses.
+Frame everything around what the candidate did, not around what went wrong around them.
