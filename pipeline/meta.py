@@ -106,6 +106,23 @@ def parse_meta(text: str) -> Meta:
     return meta
 
 
+def emails_match(a: str, b: str) -> bool:
+    """
+    Are these the same mailbox? Case, "+tag" suffixes, and (for Gmail) dots in the name don't
+    matter, so "Kerri.Jones+jobs@gmail.com" and "kerrijones@gmail.com" are the same inbox.
+    """
+    def norm(addr: str) -> str:
+        addr = (addr or "").strip().lower()
+        if "@" not in addr:
+            return addr
+        local, _, domain = addr.rpartition("@")
+        local = local.split("+", 1)[0]
+        if domain in ("gmail.com", "googlemail.com"):
+            local, domain = local.replace(".", ""), "gmail.com"
+        return f"{local}@{domain}"
+    return norm(a) == norm(b)
+
+
 def load_meta() -> Meta:
     from pipeline.config import META_PATH
     from pipeline.tailorer import load_text

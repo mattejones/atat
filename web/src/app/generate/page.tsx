@@ -19,7 +19,7 @@ const STEPS = [
   "Nearly there — still working…",
 ];
 
-function GeneratingOverlay({ company, role }: { company: string; role: string }) {
+function GeneratingOverlay({ company, role, stage }: { company: string; role: string; stage: string | null }) {
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
@@ -27,7 +27,8 @@ function GeneratingOverlay({ company, role }: { company: string; role: string })
     return () => clearInterval(interval);
   }, []);
 
-  const message = STEPS[Math.min(tick, STEPS.length - 1)];
+  // The server reports its real stage; the timer text is only a fallback until it does.
+  const message = stage ? `${stage}…` : STEPS[Math.min(tick, STEPS.length - 1)];
 
   return (
     <div className="fixed inset-0 bg-bg-base/95 backdrop-blur-sm z-50 flex flex-col items-center justify-center gap-8 px-6">
@@ -118,6 +119,7 @@ export default function GeneratePage() {
   const [generating, setGenerating] = useState(false);
   const [drafting, setDrafting]     = useState(false);
   const [scraping, setScraping]     = useState(false);
+  const [stage, setStage]           = useState<string | null>(null);
   const [error, setError]           = useState<string | null>(null);
 
   // Opened from the phone's Share sheet (see app/manifest.ts): the link arrives as ?url=,
@@ -173,7 +175,7 @@ export default function GeneratePage() {
     try {
       // Returns at once with a job; the CV is generated in the background.
       const job: Job = await api.post("/generate", request(false));
-      const done     = await waitForJob(job.job_id);
+      const done     = await waitForJob(job.job_id, { onUpdate: (j) => setStage(j.progress ?? null) });
       router.push(`/applications/${done.result.uuid}`);
     } catch (e: any) {
       setError(e.message);
@@ -199,7 +201,7 @@ export default function GeneratePage() {
 
   return (
     <>
-      {generating && <GeneratingOverlay company={company} role={role} />}
+      {generating && <GeneratingOverlay company={company} role={role} stage={stage} />}
 
       <div className="max-w-3xl mx-auto space-y-6">
         <div>

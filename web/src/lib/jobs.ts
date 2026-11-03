@@ -38,6 +38,7 @@ export interface Job {
   submitted_at:     string | null;
   started_at:       string | null;
   finished_at:      string | null;
+  progress?:        string | null;   // what a running job is doing now, if it says
   cancel_requested: boolean;
   result?:          any;
   error?:           string;

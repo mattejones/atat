@@ -683,6 +683,14 @@ export default function ApplicationPage() {
         <div className="px-4 py-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">{error}</div>
       )}
 
+      {/* A reminder, never a block: a draft PDF is useful, but don't send an unreviewed CV */}
+      {sections.length > 0 && sections.some((s: any) => !s.accepted_report_id) && (
+        <div className="px-4 py-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800">
+          {sections.filter((s: any) => !!s.accepted_report_id).length} of {sections.length} sections
+          reviewed and accepted. Check the rest before you send this CV.
+        </div>
+      )}
+
       {meta && <RoleDetails meta={meta} onSave={handleRoleDetailsSave} />}
       {meta && (
         <OutcomePanel

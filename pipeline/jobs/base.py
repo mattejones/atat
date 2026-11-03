@@ -161,10 +161,24 @@ def compact_prompt(prompt: Prompt) -> dict:
 class JobHandle:
     """What a running job can see of its own row."""
 
-    def __init__(self, job_id: str, is_cancel_requested: Callable[[], bool], attach_application: Callable[[str], None]):
+    def __init__(
+        self,
+        job_id: str,
+        is_cancel_requested: Callable[[], bool],
+        attach_application: Callable[[str], None],
+        set_progress: Callable[[str], None] = lambda stage: None,
+    ):
         self.job_id = job_id
         self._is_cancel_requested = is_cancel_requested
         self._attach_application  = attach_application
+        self._set_progress        = set_progress
+
+    def progress(self, stage: str) -> None:
+        """Say what the job is doing now ("Writing the CV"). Shown to the person waiting."""
+        try:
+            self._set_progress(stage)
+        except Exception:           # a progress note must never fail the work it describes
+            pass
 
     def checkpoint(self) -> None:
         """Call right before the first write. Raises JobCancelled if a cancel came in."""

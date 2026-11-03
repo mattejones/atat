@@ -38,6 +38,7 @@ def get_application_bundle(app_uuid: str) -> dict:
     Intended to be handed to a browser-driving tool to fill out an ATS form.
     """
     with get_connection() as db:
+        from pipeline.review_status import warning_fields
         app = get_app_by_uuid(app_uuid, db)
         out_dir = output_dir_for(app)
         name, contact = _extract_name_contact(app.get("cv_markdown"))
@@ -88,6 +89,7 @@ def get_application_bundle(app_uuid: str) -> dict:
             "salary_currency": app.get("salary_currency"),
             "questions": questions,
             "ready": bool(cv_pdf.exists()),
+            **warning_fields(db, app["id"]),
         }
 
 
@@ -144,4 +146,9 @@ def record_submission(
                 (app["id"], _date.today().isoformat(), f"via {portal}" if portal else None),
             )
 
-        return {"status": "recorded", "app_uuid": app_uuid, "portal": portal, "confirmation": confirmation}
+        from pipeline.review_status import warning_fields
+        return {
+            "status": "recorded", "app_uuid": app_uuid, "portal": portal, "confirmation": confirmation,
+            # Recorded as asked, but flagged if the CV that went out was never fully reviewed.
+            **warning_fields(db, app["id"]),
+        }

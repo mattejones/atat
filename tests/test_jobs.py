@@ -57,6 +57,7 @@ class _FakeKind(JobKind):
         return Prompt("SYSTEM PROMPT", f"note={params['note']} app={ctx.application['company']}")
 
     def run(self, ctx, params, handle):
+        handle.progress("Stage one")
         CONTROL.started.set()
         if CONTROL.block:
             assert CONTROL.release.wait(10), "test never released the job"
@@ -358,3 +359,25 @@ def test_intake_kinds_take_no_target():
 def test_intake_kinds_require_jd_text():
     with pytest.raises(JobError, match="jd_text"):
         service.create("analyse_job", params={"jd_text": "   "}, draft=True)
+
+
+# ── Progress ──────────────────────────────────────────────────────────────────
+
+def test_a_running_job_reports_its_stage_and_clears_it_when_done():
+    CONTROL.block = True
+    job = service.create("_fake", app_uuid=_make_app(), params={"note": "slow"})
+    assert CONTROL.started.wait(5)
+    assert service.get(job["job_id"])["progress"] == "Stage one"
+
+    CONTROL.release.set()
+    done = service.wait(job["job_id"], timeout=5)
+    assert done["status"] == "succeeded" and done["progress"] is None
+
+
+def test_a_failing_progress_note_never_fails_the_work():
+    from pipeline.jobs.base import JobHandle
+
+    def boom(stage):
+        raise RuntimeError("db locked")
+
+    JobHandle("j", lambda: False, lambda a: None, set_progress=boom).progress("anything")   # must not raise

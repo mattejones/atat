@@ -12,7 +12,7 @@ import logging
 
 from db.database import get_connection
 from pipeline.jobs.base import JobContext, JobError, JobHandle, JobKind, Param, Prompt, register
-from pipeline.jobs.kinds._common import insert_sections, new_application_slot, now_iso, run_meta
+from pipeline.jobs.kinds._common import _auto_judge, insert_sections, new_application_slot, now_iso, run_meta
 
 log = logging.getLogger(__name__)
 
@@ -118,11 +118,13 @@ class SubmitJob(JobKind):
 
         jd_text = params["jd_text"]
         notes   = params["generation_notes"]
+        handle.progress("Writing your CV")
         try:
             cv_data = call_llm(build_system_prompt(), assemble_user_message(jd_text, notes))
         except Exception as e:
             raise JobError(f"LLM generation failed: {e}") from e
 
+        handle.progress("Checking the layout")
         reasoning       = cv_data.pop("reasoning", "")
         section_content = split_cv_sections(cv_data)
         cv_markdown     = compose_cv_markdown(cv_data.get("name", ""), cv_data.get("contact", {}), section_content)
@@ -160,11 +162,21 @@ class SubmitJob(JobKind):
         handle.attach_application(app_id)
 
         if RENDER_PDF:
+            handle.progress("Making the PDF")
             try:
                 from pipeline.render import render_cv
                 render_cv(out_dir / "cv.md", out_dir)
             except Exception:
                 log.exception("PDF render failed for %s (non-fatal, re-renderable)", app_id)
+
+        # Judge it now (no coverage: this legacy path has no jd_spec to judge against).
+        from pipeline.config import AUTO_JUDGE
+        judged = None
+        if AUTO_JUDGE:
+            handle.progress("Checking the wording and facts")
+            judged = _auto_judge(
+                {"id": app_id, "uuid": app_uuid, "jd_text": jd_text}, cv_markdown, coverage=False,
+            )
 
         return {
             "uuid":          app_uuid,
@@ -172,4 +184,5 @@ class SubmitJob(JobKind):
             "cv_markdown":   cv_markdown,
             "has_reasoning": bool(reasoning),
             "status":        "generated",
+            "auto_judged":   judged,
         }

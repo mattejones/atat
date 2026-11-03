@@ -88,6 +88,12 @@ function SyncBar({ status, syncing, onSync }: { status: InboxStatus | null; sync
           {status.sync.last_synced_at ? `Last synced ${relativeTime(status.sync.last_synced_at)}` : "Never synced"}
           {r && ` — ${r.fetched} checked, ${r.queued} queued, ${r.ignored} ignored${r.untriaged ? `, ${r.untriaged} for agent triage` : ""}${r.failed ? `, ${r.failed} unclassified` : ""}${r.remaining ? `, ${r.remaining} left for next sync` : ""}`}
         </p>
+        {status.email_mismatch && (
+          <p className="text-amber-700">
+            Your CV uses {status.cv_email}, but this inbox is {status.email}. Replies to your
+            applications go to the CV address, so they won&apos;t show up here.
+          </p>
+        )}
         {status.sync.untriaged > 0 && (
           <p className="text-amber-700">
             {status.sync.untriaged} email{status.sync.untriaged === 1 ? "" : "s"} waiting for your AI assistant to sort.

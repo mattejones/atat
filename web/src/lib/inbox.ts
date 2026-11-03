@@ -36,6 +36,8 @@ export interface InboxStatus {
   email:               string | null;
   detail:              string | null;
   connect_command:     string;
+  cv_email:            string | null;   // the address on the CV (from META)
+  email_mismatch:      boolean;         // CV address differs from the connected inbox
   scheduled:           boolean;
   interval_minutes:    number;
   sync: {

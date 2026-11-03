@@ -139,15 +139,54 @@ the Advanced settings block is hidden. Change them in the `.env` and restart:
 
 ### Gmail
 
-Connecting Gmail is a one-time step that needs a browser. Do it on a laptop with this
-repo and that instance's folder as `ATAT_HOME`, then copy the result across:
+Connecting Gmail is a one-time step that needs a browser. Put the Google OAuth client file
+(`client_secret.json`, type "Desktop app") in the instance's `data/gmail/` folder (a copy in
+`data/` is found too; the command lists every place it looked if it finds none).
+
+On a laptop with this repo and that instance's folder as `ATAT_HOME`, then copy the result across:
 
 ```bash
 ATAT_HOME=$PWD/instances/kerri python -m pipeline.inbox.auth   # writes instances/kerri/data/gmail/token.json
 ```
 
+On a **headless server**, pick a fixed port so it can be tunnelled, instead of reading a random
+one out of the URL:
+
+```bash
+# on the server (in the container, listen on 0.0.0.0 and publish the port)
+docker compose --env-file instances/kerri/compose.env -p atat-kerri run --rm -p 8765:8765 api \
+  python -m pipeline.inbox.auth --no-browser --port 8765 --host 0.0.0.0
+# on your laptop, in another terminal
+ssh -L 8765:localhost:8765 <server>
+```
+
+Open the URL it prints in the laptop's browser. Google redirects back to
+`http://localhost:8765/`, which the tunnel carries to the server. The CV email in `meta/meta.md`
+should be the connected account (or an alias of it): replies go to the CV address, and the
+Inbox page warns when it differs.
+
 Set `GMAIL_ENABLED=true` and `INBOX_CLASSIFIER=api` in the instance `.env` (the app itself
-sorts the mail; `agent` mode needs an MCP client).
+sorts the mail; `agent` mode needs an MCP client). After editing an instance `.env` by hand,
+run `restart api`: the app reads that file itself, so `up -d` sees no change and won't do it.
+
+### Shaping the CV (per instance)
+
+Set in the instance `.env`:
+
+| Setting | Default | |
+|---|---|---|
+| `PROFILE_PARAGRAPHS`, `PROFILE_WORDS_MIN`, `PROFILE_WORDS_MAX` | 2, 80, 120 | profile shape; written into the prompt and checked by the judge |
+| `EARLIER_EXPERIENCE_HEADING` | `Earlier experience` | heading over the compressed earlier roles |
+| `HEADING_RULE` | `full` | rule beside PDF section headings: `full`, `short` or `none` |
+| `LINK_UNDERLINE` | `true` | underline links in the PDF |
+| `AUTO_JUDGE` | `true` | run the judges as soon as a CV is generated |
+
+The CV header (name, email, phone, location, LinkedIn, website) is built from the library's
+`meta/meta.md`, not by the model: write `**Email:** ...`, `**Location:** ...` and so on. Name,
+email and location are required; website is optional (a line saying `DO NOT INCLUDE` keeps a
+field off the CV). Facts you want on record but never on a CV go under a `## Private` heading
+(or between `<!-- private -->` and `<!-- /private -->`) in an experience file; they are removed
+before anything is sent to a model or shown by the MCP library tools.
 
 ### Day to day
 

@@ -13,7 +13,7 @@ from pathlib import Path
 
 from db.database import get_connection
 from pipeline.jobs.base import JobContext, JobError, JobHandle, JobKind, Param, Prompt, register
-from pipeline.jobs.kinds._common import insert_sections, load_spec, now_iso, run_meta
+from pipeline.jobs.kinds._common import _auto_judge, insert_sections, load_spec, now_iso, run_meta
 
 log = logging.getLogger(__name__)
 
@@ -71,6 +71,7 @@ class GenerateCV(JobKind):
         app_uuid = app["uuid"]
         out_dir  = Path(app["output_dir"])
 
+        handle.progress("Writing your CV")
         try:
             cv_data = call_llm(
                 build_system_prompt(),
@@ -79,6 +80,7 @@ class GenerateCV(JobKind):
         except Exception as e:
             raise JobError(f"LLM generation failed: {e}") from e
 
+        handle.progress("Checking the layout")
         reasoning       = cv_data.pop("reasoning", "")
         section_content = split_cv_sections(cv_data)
         cv_markdown     = compose_cv_markdown(cv_data.get("name", ""), cv_data.get("contact", {}), section_content)
@@ -125,6 +127,7 @@ class GenerateCV(JobKind):
         # Render outside the write transaction — typst takes a moment, and a failed render
         # is non-fatal (render_cv can re-run it).
         if RENDER_PDF and rt.passed:
+            handle.progress("Making the PDF")
             try:
                 from pipeline.render import render_cv
                 render_cv(out_dir / "cv.md", out_dir, company=app.get("company") or "")
@@ -132,6 +135,12 @@ class GenerateCV(JobKind):
                     db.execute("UPDATE applications SET has_pdf = 1 WHERE id = ?", (app_id,))
             except Exception:
                 log.exception("PDF render failed for %s (non-fatal, re-renderable)", app_id)
+
+        # Judge it now. A CV that sits unjudged is the one that gets rendered and sent.
+        from pipeline.config import AUTO_JUDGE
+        if AUTO_JUDGE:
+            handle.progress("Checking the wording and facts")
+        judged = _auto_judge(app, cv_markdown) if AUTO_JUDGE else None
 
         return {
             "uuid":               app_uuid,
@@ -143,7 +152,13 @@ class GenerateCV(JobKind):
             "roundtrip_failures": [
                 {"field": f.field, "expected": f.expected, "actual": f.actual} for f in rt.failures
             ],
-            "next_step": "Run run_coverage() for tier 3, and run_judges() per section for tiers 1 and 2.",
+            "auto_judged":        judged,
+            "next_step": (
+                "The judges have run on every section (and coverage is running as its own job). "
+                "Read each section's flags, retry what needs it, then accept each section."
+                if judged else
+                "Run run_coverage() for tier 3, and run_judges() per section for tiers 1 and 2."
+            ),
         }
 
 

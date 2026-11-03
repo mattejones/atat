@@ -97,6 +97,9 @@ EARLIER_EXPERIENCE_HEADING = os.getenv("EARLIER_EXPERIENCE_HEADING", "Earlier ex
 
 # ── Rendering ─────────────────────────────────────────────────────────────────
 RENDER_PDF = os.getenv("RENDER_PDF", "true").lower() == "true"
+# AUTO_JUDGE — run the judges (tiers 1-3) on a CV as soon as it is generated, so a CV is never left
+#   unjudged waiting for someone to remember. Costs a few extra cheap model calls per CV.
+AUTO_JUDGE = os.getenv("AUTO_JUDGE", "true").lower() == "true"
 # HEADING_RULE  — the rule beside each section heading in the PDF: none | short | full.
 #   "full" (a line across the page, beside the title) is the original look.
 # LINK_UNDERLINE — underline links in the PDF (colour always marks them).

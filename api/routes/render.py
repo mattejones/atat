@@ -55,4 +55,6 @@ def render_application(
         (app_id,)
     )
 
-    return {"status": "rendered", "pdf": "cv.pdf"}
+    # Warn (never block) if the CV hasn't been reviewed: a draft PDF is useful for checking layout.
+    from pipeline.review_status import warning_fields
+    return {"status": "rendered", "pdf": "cv.pdf", **warning_fields(db, app_id)}

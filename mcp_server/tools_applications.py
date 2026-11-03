@@ -324,7 +324,9 @@ def render_cv(app_uuid: str) -> dict:
             "INSERT INTO application_events (application_id, event_type, detail) VALUES (?, 'pdf_rendered', 'PDF rendered successfully')",
             (app["id"],),
         )
-        return {"status": "rendered", "pdf_path": str(out_dir / "cv.pdf")}
+        from pipeline.review_status import warning_fields
+        # A draft PDF is fine for checking layout; the warning only reminds you not to send it yet.
+        return {"status": "rendered", "pdf_path": str(out_dir / "cv.pdf"), **warning_fields(db, app["id"])}
 
 
 @mcp.tool()

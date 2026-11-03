@@ -157,6 +157,13 @@ class Runner:
                 (application_id, _now(), job_id),
             )
 
+    def _set_progress(self, job_id: str, stage: str) -> None:
+        with get_connection() as db:
+            db.execute(
+                "UPDATE generation_jobs SET progress = ?, updated_at = ? WHERE id = ? AND status = 'running'",
+                (stage[:200], _now(), job_id),
+            )
+
     def _execute(self, job_id: str) -> None:
         try:
             if not self._claim(job_id):
@@ -175,6 +182,7 @@ class Runner:
                     job_id,
                     is_cancel_requested=lambda: self._cancel_requested(job_id),
                     attach_application=lambda app_id: self._attach_application(job_id, app_id),
+                    set_progress=lambda stage: self._set_progress(job_id, stage),
                 )
                 result = kind.run(ctx, params, handle)
             except JobCancelled:

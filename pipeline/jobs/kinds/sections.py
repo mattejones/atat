@@ -115,6 +115,7 @@ class RegenerateSection(JobKind):
         global_comment = params["global_comment"]
         active_flags   = _active_flags(report_id)
 
+        handle.progress("Rewriting the section")
         try:
             new_text, _, _ = regenerate_text(
                 section_name=section_name,
@@ -145,6 +146,7 @@ class RegenerateSection(JobKind):
             )
             db.execute("UPDATE reports SET status = 'rejected' WHERE id = ?", (report_id,))
 
+        handle.progress("Checking the new version")
         # The new report is committed; judge it with no connection open, then persist.
         from pipeline.judges.context import context_for
         judge_ctx  = context_for(app, section_name, replace=(_section_text(report), new_text))

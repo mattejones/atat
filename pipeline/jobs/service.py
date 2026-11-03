@@ -118,6 +118,7 @@ def _view(job: dict, include_prompt: bool = False) -> dict:
         "started_at":       job["started_at"],
         "finished_at":      job["finished_at"],
         "cancel_requested": bool(job["cancel_requested"]),
+        "progress":         job.get("progress") if job["status"] == "running" else None,
         "next_step":        _NEXT_STEP[job["status"]],
     }
     if job["status"] == "succeeded":

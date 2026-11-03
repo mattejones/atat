@@ -65,12 +65,28 @@ def inbox_status():
     from pipeline.inbox.auth import connection_status
     from pipeline.inbox.sync import sync_state
 
+    status = connection_status()
     return {
-        **connection_status(),
+        **status,
         "scheduled":        GMAIL_ENABLED,
         "interval_minutes": GMAIL_SYNC_INTERVAL_MINUTES,
         "sync":             sync_state(),
+        **_cv_email_check(status.get("email")),
     }
+
+
+def _cv_email_check(account_email):
+    """
+    Replies to an application go to the email on the CV. If that isn't the connected Gmail
+    account, they never reach this inbox. Compare them so the page can say so.
+    """
+    from pipeline.meta import emails_match, load_meta
+    try:
+        cv_email = load_meta().email
+    except Exception:
+        cv_email = ""
+    mismatch = bool(cv_email and account_email and not emails_match(cv_email, account_email))
+    return {"cv_email": cv_email or None, "email_mismatch": mismatch}
 
 
 @router.get("/counts")
