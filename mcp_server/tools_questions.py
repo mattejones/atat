@@ -175,3 +175,27 @@ def submit_answer_feedback(app_uuid: str, question_id: str, rating: str, user_co
 
         row = db.execute("SELECT * FROM answer_feedback WHERE id = ?", (feedback_id,)).fetchone()
         return row_to_dict(row)
+
+
+@mcp.tool()
+def improve_answer(
+    app_uuid: str,
+    question_id: str,
+    draft: Optional[str] = None,
+    instruction: Optional[str] = None,
+) -> dict:
+    """
+    Improve the applicant's OWN answer to a question, keeping their facts and voice.
+
+    ASYNC: returns a job_id. The improved text becomes the live answer; the text it was improved
+    from is kept (source_draft) so the applicant can restore it.
+
+    draft: the text to improve; default is the question's current answer.
+    instruction: an optional steer such as "make it shorter".
+    """
+    from pipeline.jobs import service
+    return service.create(
+        "improve_answer",
+        app_uuid=app_uuid,
+        params={"question_id": question_id, "draft": draft, "instruction": instruction},
+    )

@@ -282,3 +282,80 @@ def generate_answers(
         log.warning("Model did not return answers for question_ids: %s", missing)
 
     return answers
+
+
+# ── Improving the person's own answer ────────────────────────────────────────
+
+def _build_improve_system(qa_tone: str) -> str:
+    path = PROMPTS_PATH / "question_improve.md"
+    if not path.exists():
+        raise FileNotFoundError(f"Answer improvement prompt not found at {path}.")
+    tone_key = qa_tone if qa_tone in _TONE_INSTRUCTIONS else _DEFAULT_TONE
+    system = f"{path.read_text(encoding='utf-8')}\n\n---\n\n## TONE\n\n{_TONE_INSTRUCTIONS[tone_key]}"
+    # The person's standing rules (words never to use, how to refer to things) apply here too.
+    from pipeline.tailorer import load_personal_additions
+    additions = load_personal_additions()
+    if additions:
+        system += f"\n\n---\n\n## PERSONAL ADDITIONS\n\n{additions}"
+    return system
+
+
+def build_improve_prompt(
+    question_text:   str,
+    response_length: str,
+    draft:           str,
+    jd_text:         str,
+    cv_markdown:     str,
+    notes:           Optional[str],
+    qa_tone:         str,
+    instruction:     Optional[str] = None,
+) -> tuple[str, str]:
+    """Assemble the (system, user) prompt for improving a person's own answer."""
+    notes_block = f"\n\n### Application notes\n\n{notes.strip()}" if notes and notes.strip() else ""
+    extra = f"\n\n### What the applicant asked for\n\n{instruction.strip()}" if instruction and instruction.strip() else ""
+    length = _LENGTH_LABELS.get(response_length, _LENGTH_LABELS["short"])
+    user = f"""## APPLICATION CONTEXT
+
+### Job description
+{(jd_text or "").strip()}
+
+### CV
+{(cv_markdown or "").strip()}{notes_block}
+
+---
+
+## THE QUESTION
+
+{question_text.strip()}
+
+Requested length: {length}
+
+## THE APPLICANT'S OWN ANSWER
+
+{draft.strip()}{extra}
+"""
+    return _build_improve_system(qa_tone), user
+
+
+def improve_answer(
+    question_text:   str,
+    response_length: str,
+    draft:           str,
+    jd_text:         str,
+    cv_markdown:     str,
+    notes:           Optional[str],
+    qa_tone:         str,
+    instruction:     Optional[str] = None,
+) -> str:
+    """Improve the applicant's own draft. Raises RuntimeError if the model returns nothing."""
+    system, user = build_improve_prompt(
+        question_text, response_length, draft, jd_text, cv_markdown, notes, qa_tone, instruction)
+    try:
+        blocks = _call_anthropic(system, user, include_search=False)
+    except Exception as e:                                  # noqa: BLE001
+        raise RuntimeError(f"Improving the answer failed: {e}") from e
+    text = "".join(getattr(b, "text", "") for b in blocks).strip()
+    text = re.sub(r"^[\"\u201c](.*)[\"\u201d]$", r"\1", text, flags=re.S).strip()   # a stray wrapping quote
+    if not text:
+        raise RuntimeError("The model returned an empty answer.")
+    return text

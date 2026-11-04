@@ -14,6 +14,9 @@ Endpoints:
   POST   /questions/{app_uuid}/{q_id}/regenerate — queue a single-answer regeneration (job, 202)
   PATCH  /questions/{app_uuid}/{q_id}/answer     — save user-edited answer text
   POST   /questions/{app_uuid}/{q_id}/feedback   — submit feedback (async processing)
+  PUT    /questions/{app_uuid}/{q_id}/draft      — save the person's OWN answer (creates one if none)
+  POST   /questions/{app_uuid}/{q_id}/improve    — queue an AI improvement of their answer (job, 202)
+  POST   /questions/{app_uuid}/{q_id}/restore    — put back the text an improvement started from
 
 Generation runs as a background job (pipeline/jobs/kinds/documents.py); poll
 GET /jobs/{job_id} for the result.
@@ -66,6 +69,15 @@ class QuestionUpdate(BaseModel):
 
 class AnswerUpdate(BaseModel):
     user_answer: str
+
+
+class DraftUpdate(BaseModel):
+    text: str
+
+
+class ImproveRequest(BaseModel):
+    draft:       Optional[str] = None     # default: the question's current answer
+    instruction: Optional[str] = None
 
 
 class GenerateRequest(BaseModel):
@@ -309,6 +321,73 @@ def update_answer(
         "user_answer":      body.user_answer,
         "effective_answer": body.user_answer,
     }
+
+
+@router.put("/{app_uuid}/{q_id}/draft")
+def save_draft(
+    app_uuid: str,
+    q_id:     str,
+    body:     DraftUpdate,
+    db:       sqlite3.Connection = Depends(get_db),
+):
+    """
+    Save the person's own answer. If the question has no answer yet one is created holding their
+    text (ai_answer empty), so they can write first and ask for an improvement afterwards.
+    """
+    app    = _get_app_by_uuid(app_uuid, db)
+    app_id = app["id"]
+    _get_question_or_404(q_id, app_id, db)
+
+    answer = _latest_answer_for_question(q_id, db)
+    if answer:
+        db.execute("UPDATE application_answers SET user_answer = ? WHERE id = ?", (body.text, answer["id"]))
+        answer_id = answer["id"]
+    else:
+        answer_id = str(uuid.uuid4())
+        db.execute(
+            """INSERT INTO application_answers
+               (id, question_id, application_id, ai_answer, user_answer, model_used, created_at)
+               VALUES (?, ?, ?, '', ?, NULL, ?)""",
+            (answer_id, q_id, app_id, body.text, datetime.now().isoformat()),
+        )
+    return {"answer_id": answer_id, "question_id": q_id, "user_answer": body.text,
+            "effective_answer": body.text}
+
+
+@router.post("/{app_uuid}/{q_id}/improve", status_code=202)
+def improve_answer(
+    app_uuid: str,
+    q_id:     str,
+    body:     ImproveRequest,
+    db:       sqlite3.Connection = Depends(get_db),
+):
+    """Queue an AI improvement of the person's own answer. Returns 202 with the job; its result
+    carries the improved text and the original (source_draft)."""
+    app = _get_app_by_uuid(app_uuid, db)
+    _get_question_or_404(q_id, app["id"], db)
+    return call(
+        service.create, "improve_answer", app_uuid=app_uuid,
+        params={"question_id": q_id, "draft": body.draft, "instruction": body.instruction},
+        created_by="human",
+    )
+
+
+@router.post("/{app_uuid}/{q_id}/restore")
+def restore_original(
+    app_uuid: str,
+    q_id:     str,
+    db:       sqlite3.Connection = Depends(get_db),
+):
+    """Put back the person's own text that the latest improvement started from."""
+    app    = _get_app_by_uuid(app_uuid, db)
+    _get_question_or_404(q_id, app["id"], db)
+    answer = _latest_answer_for_question(q_id, db)
+    if not answer or not answer.get("source_draft"):
+        raise HTTPException(status_code=404, detail="There is no earlier version of your answer to restore.")
+    db.execute("UPDATE application_answers SET user_answer = ? WHERE id = ?",
+               (answer["source_draft"], answer["id"]))
+    return {"answer_id": answer["id"], "question_id": q_id,
+            "user_answer": answer["source_draft"], "effective_answer": answer["source_draft"]}
 
 
 @router.post("/{app_uuid}/{q_id}/feedback")

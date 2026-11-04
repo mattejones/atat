@@ -1,638 +1,363 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { api } from "@/lib/api";
 import { runJob } from "@/lib/jobs";
 
-import { api } from "@/lib/api";
-const API = api.url;
+// The questions an application form asks ("Why do you want this role?"). The person pastes each
+// question, writes their own answer, and can ask for it to be improved. Their own wording is
+// always kept: after an improvement "Keep mine" puts it back.
 
-// ── Types ─────────────────────────────────────────────────────────────────────
-
-type ResponseLength = "short" | "paragraph";
-type QaTone = "professional" | "direct" | "conversational" | "technical";
-type FeedbackRating = "positive" | "negative";
+type Length = "short" | "paragraph";
+type Tone = "professional" | "direct" | "conversational" | "technical";
 
 interface Answer {
   id:           string;
   ai_answer:    string;
   user_answer:  string | null;
-  created_at:   string;
+  source_draft: string | null;
 }
 
 interface Question {
   id:               string;
-  application_id:   string;
   question_text:    string;
-  response_length:  ResponseLength;
+  response_length:  Length;
   needs_research:   number;
-  sort_order:       number;
-  created_at:       string;
   answer:           Answer | null;
   effective_answer: string | null;
-  isDraft?:         boolean;
 }
 
-// ── Constants ─────────────────────────────────────────────────────────────────
-
-const TONE_OPTIONS: { value: QaTone; label: string }[] = [
-  { value: "professional",  label: "Professional" },
-  { value: "direct",        label: "Direct" },
-  { value: "conversational", label: "Conversational" },
-  { value: "technical",     label: "Technical" },
+const TONES: { value: Tone; label: string }[] = [
+  { value: "professional",   label: "Professional" },
+  { value: "direct",         label: "Direct" },
+  { value: "conversational", label: "Warm" },
+  { value: "technical",      label: "Technical" },
 ];
 
-const LENGTH_OPTIONS: { value: ResponseLength; label: string; hint: string }[] = [
-  { value: "short",     label: "Short",     hint: "1–3 sentences" },
-  { value: "paragraph", label: "Paragraph", hint: "4–6 sentences" },
+const LENGTHS: { value: Length; label: string; hint: string; max: number }[] = [
+  { value: "short",     label: "Short",     hint: "1–3 sentences", max: 80 },
+  { value: "paragraph", label: "Paragraph", hint: "4–6 sentences", max: 160 },
 ];
 
-// ── Tone selector ─────────────────────────────────────────────────────────────
+const wordCount = (s: string) => (s.trim() ? s.trim().split(/\s+/).length : 0);
 
-function ToneSelector({
-  appId,
-  tone,
-  onUpdate,
+const primaryBtn =
+  "min-h-11 sm:min-h-0 px-4 py-2 text-sm sm:text-xs font-medium bg-accent text-white rounded-lg hover:bg-accent-dim transition-colors disabled:opacity-50";
+const quietBtn =
+  "min-h-11 sm:min-h-0 px-3 py-2 text-sm sm:text-xs font-medium text-text-secondary border border-bg-border rounded-lg hover:text-text-primary hover:bg-bg-elevated transition-colors disabled:opacity-50";
+
+// ── One question ─────────────────────────────────────────────────────────────
+
+function QuestionCard({
+  appId, q, onChanged, onDeleted,
 }: {
-  appId:    string;
-  tone:     QaTone;
-  onUpdate: (t: QaTone) => void;
+  appId: string; q: Question; onChanged: () => Promise<void>; onDeleted: () => void;
 }) {
-  const [saving, setSaving] = useState(false);
+  const saved = q.effective_answer ?? "";
+  const [text, setText] = useState(saved);
+  const [question, setQuestion] = useState(q.question_text);
+  const [steer, setSteer] = useState("");
+  const [showSteer, setShowSteer] = useState(false);
+  const [busy, setBusy] = useState<null | "improving" | "writing">(null);
+  const [state, setState] = useState<"" | "saving" | "saved">("");
+  const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [showOriginal, setShowOriginal] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastSaved = useRef(saved);
 
-  async function handleSelect(t: QaTone) {
-    if (t === tone) return;
-    setSaving(true);
+  // Take the server's text when it changes underneath us (an improvement landing, a restore).
+  useEffect(() => {
+    setText(q.effective_answer ?? "");
+    lastSaved.current = q.effective_answer ?? "";
+  }, [q.effective_answer, q.answer?.id]);
+
+  const length = LENGTHS.find((l) => l.value === q.response_length) ?? LENGTHS[0];
+  const words = wordCount(text);
+  const original = q.answer?.source_draft ?? null;
+  const improved = !!original && original.trim() !== text.trim();
+
+  const save = useCallback(async (value: string) => {
+    if (value === lastSaved.current) return;
+    setState("saving");
     try {
-      const res = await fetch(`${API}/applications/${appId}`, {
-        method:  "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ qa_tone: t }),
-      });
-      if (res.ok) onUpdate(t);
+      await api.put(`/questions/${appId}/${q.id}/draft`, { text: value });
+      lastSaved.current = value;
+      setState("saved");
+    } catch {
+      setState("");
+      setError("Couldn't save your answer. Check your connection and try again.");
+    }
+  }, [appId, q.id]);
+
+  function onType(value: string) {
+    setText(value);
+    setError(null);
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => save(value), 900);
+  }
+
+  async function flush() {
+    if (timer.current) clearTimeout(timer.current);
+    await save(text);
+  }
+
+  async function run(kind: "improving" | "writing") {
+    setError(null);
+    setBusy(kind);
+    try {
+      await flush();
+      if (kind === "improving") {
+        await runJob(`/questions/${appId}/${q.id}/improve`, { instruction: steer.trim() || null });
+      } else {
+        await runJob(`/questions/${appId}/${q.id}/regenerate`);
+      }
+      setSteer("");
+      await onChanged();
+    } catch (e: any) {
+      setError(e?.message || "That didn't work. Please try again.");
     } finally {
-      setSaving(false);
+      setBusy(null);
+    }
+  }
+
+  async function keepMine() {
+    setError(null);
+    try {
+      await api.post(`/questions/${appId}/${q.id}/restore`);
+      await onChanged();
+    } catch (e: any) {
+      setError(e?.message || "Couldn't put your version back.");
+    }
+  }
+
+  async function saveQuestion(patch: Partial<{ question_text: string; response_length: Length; needs_research: number }>) {
+    try {
+      await api.patch(`/questions/${appId}/${q.id}`, patch);
+      await onChanged();
+    } catch (e: any) {
+      setError(e?.message || "Couldn't save that change.");
+    }
+  }
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch { /* clipboard blocked: the text is on screen to select */ }
+  }
+
+  async function remove() {
+    if (!window.confirm("Remove this question and its answer?")) return;
+    try {
+      await api.delete(`/questions/${appId}/${q.id}`);
+      onDeleted();
+    } catch (e: any) {
+      setError(e?.message || "Couldn't remove the question.");
     }
   }
 
   return (
-    <div className="flex items-center gap-3">
-      <span className="text-xs text-text-muted whitespace-nowrap">Answer tone</span>
-      <div className="flex gap-1.5 flex-wrap">
-        {TONE_OPTIONS.map((opt) => (
-          <button
-            key={opt.value}
-            onClick={() => handleSelect(opt.value)}
-            disabled={saving}
-            className={`px-3 py-1 text-xs rounded-full border transition-colors ${
-              tone === opt.value
+    <div className="bg-bg-surface border border-bg-border rounded-xl p-4 space-y-3">
+      <div className="flex items-start gap-2">
+        <textarea
+          value={question}
+          onChange={(e) => setQuestion(e.target.value)}
+          onBlur={() => question.trim() && question !== q.question_text && saveQuestion({ question_text: question.trim() })}
+          rows={2}
+          aria-label="Question"
+          className="flex-1 text-sm font-medium text-text-primary bg-transparent resize-none leading-snug focus:outline-none focus:bg-bg-elevated rounded-md px-1 -mx-1"
+        />
+        <button onClick={remove} aria-label="Remove question"
+          className="shrink-0 min-h-11 min-w-11 sm:min-h-0 sm:min-w-0 sm:p-1 text-text-muted hover:text-red-600 text-lg leading-none">×</button>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        {LENGTHS.map((l) => (
+          <button key={l.value} onClick={() => saveQuestion({ response_length: l.value })}
+            className={`min-h-11 sm:min-h-0 px-3 py-1.5 text-xs rounded-full border transition-colors ${
+              q.response_length === l.value
                 ? "bg-accent text-white border-accent"
-                : "border-bg-border text-text-secondary hover:border-accent/50 hover:text-text-primary"
-            } disabled:opacity-50`}
-          >
-            {opt.label}
+                : "text-text-secondary border-bg-border hover:bg-bg-elevated"
+            }`}>
+            {l.label} <span className="opacity-70">· {l.hint}</span>
           </button>
         ))}
       </div>
-    </div>
-  );
-}
 
-// ── Feedback control ──────────────────────────────────────────────────────────
-
-function FeedbackControl({
-  appId,
-  qId,
-  answerId,
-}: {
-  appId:    string;
-  qId:      string;
-  answerId: string;
-}) {
-  const [submitted,  setSubmitted]  = useState<FeedbackRating | null>(null);
-  const [showInput,  setShowInput]  = useState(false);
-  const [comment,    setComment]    = useState("");
-  const [submitting, setSubmitting] = useState(false);
-
-  async function submit(rating: FeedbackRating) {
-    setSubmitting(true);
-    try {
-      await fetch(`${API}/questions/${appId}/${qId}/feedback`, {
-        method:  "POST",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ rating, user_comment: comment || null }),
-      });
-      setSubmitted(rating);
-      setShowInput(false);
-      setComment("");
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  if (submitted) {
-    return (
-      <span className="text-[10px] text-text-muted italic">
-        Feedback recorded — thanks
-      </span>
-    );
-  }
-
-  return (
-    <div className="flex items-center gap-2">
-      <span className="text-[10px] text-text-muted">Helpful?</span>
-      <button
-        onClick={() => { setShowInput(true); }}
-        disabled={submitting}
-        title="Good answer"
-        className="text-xs text-text-muted hover:text-green-600 transition-colors disabled:opacity-50"
-      >
-        👍
-      </button>
-      <button
-        onClick={() => setShowInput(true)}
-        disabled={submitting}
-        title="Needs improvement"
-        className="text-xs text-text-muted hover:text-red-500 transition-colors disabled:opacity-50"
-      >
-        👎
-      </button>
-      {showInput && (
-        <div className="flex items-center gap-1.5 ml-1">
-          <input
-            value={comment}
-            onChange={(e) => setComment(e.target.value)}
-            placeholder="Optional comment…"
-            className="px-2 py-1 text-xs bg-white border border-bg-border rounded-md w-40 focus:outline-none focus:ring-1 focus:ring-accent/40"
-          />
-          <button
-            onClick={() => submit("positive")}
-            disabled={submitting}
-            className="px-2 py-0.5 text-xs text-green-700 border border-green-300 rounded hover:bg-green-50 disabled:opacity-50"
-          >
-            👍 Good
-          </button>
-          <button
-            onClick={() => submit("negative")}
-            disabled={submitting}
-            className="px-2 py-0.5 text-xs text-red-700 border border-red-300 rounded hover:bg-red-50 disabled:opacity-50"
-          >
-            👎 Poor
-          </button>
-          <button
-            onClick={() => setShowInput(false)}
-            className="text-xs text-text-muted hover:text-text-secondary"
-          >
-            Cancel
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Answer card ───────────────────────────────────────────────────────────────
-
-function AnswerCard({
-  appId,
-  question,
-  onRegenerate,
-}: {
-  appId:        string;
-  question:     Question;
-  onRegenerate: (q: Question) => void;
-}) {
-  const answer          = question.answer;
-  const [text, setText] = useState(question.effective_answer ?? "");
-  const [saved, setSaved]     = useState(true);
-  const [saving, setSaving]   = useState(false);
-  const [copying, setCopying] = useState(false);
-  const [regen, setRegen]     = useState(false);
-
-  // Sync if effective_answer changes (e.g. after regeneration)
-  useEffect(() => {
-    setText(question.effective_answer ?? "");
-    setSaved(true);
-  }, [question.effective_answer]);
-
-  async function saveAnswer(value: string) {
-    if (!answer) return;
-    setSaving(true);
-    try {
-      await fetch(`${API}/questions/${appId}/${question.id}/answer`, {
-        method:  "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ user_answer: value }),
-      });
-      setSaved(true);
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function copyToClipboard() {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopying(true);
-      setTimeout(() => setCopying(false), 1500);
-    } catch {
-      // Clipboard API not available
-    }
-  }
-
-  async function handleRegenerate() {
-    setRegen(true);
-    try {
-      // Queued as a background job; runJob follows it until the answer is written.
-      const result = await runJob(`/questions/${appId}/${question.id}/regenerate`);
-      const data   = result?.answers?.[0];
-      if (data) {
-        onRegenerate({ ...question, effective_answer: data.effective_answer, answer: {
-          id: data.answer_id,
-          ai_answer: data.ai_answer,
-          user_answer: null,
-          created_at: new Date().toISOString(),
-        }});
-      }
-    } catch {
-      // Failure leaves the existing answer in place, as before.
-    } finally {
-      setRegen(false);
-    }
-  }
-
-  if (!answer) return null;
-
-  return (
-    <div className="mt-2 pl-3 border-l-2 border-accent/20">
-      <textarea
-        value={text}
-        onChange={(e) => { setText(e.target.value); setSaved(false); }}
-        onBlur={(e) => { if (!saved) saveAnswer(e.target.value); }}
-        rows={text.split("\n").length + 2}
-        className="w-full px-3 py-2 text-sm text-text-primary bg-bg-elevated border border-bg-border rounded-lg resize-y focus:outline-none focus:ring-2 focus:ring-accent/40 leading-relaxed"
-      />
-      <div className="flex items-center justify-between mt-1.5 flex-wrap gap-2">
-        <FeedbackControl
-          appId={appId}
-          qId={question.id}
-          answerId={answer.id}
-        />
-        <div className="flex items-center gap-2">
-          {saving && <span className="text-[10px] text-text-muted">Saving…</span>}
-          {!saving && !saved && <span className="text-[10px] text-text-muted">Unsaved</span>}
-          <button
-            onClick={copyToClipboard}
-            className="text-xs text-text-muted hover:text-accent transition-colors flex items-center gap-1"
-          >
-            {copying ? "✓ Copied" : "Copy"}
-          </button>
-          <button
-            onClick={handleRegenerate}
-            disabled={regen}
-            className="text-xs text-text-muted hover:text-text-secondary transition-colors disabled:opacity-50 flex items-center gap-1"
-          >
-            {regen ? (
-              <><span className="inline-block w-3 h-3 border border-text-muted/40 border-t-text-muted rounded-full animate-spin" />Regenerating…</>
-            ) : "Regenerate"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── Question row ──────────────────────────────────────────────────────────────
-
-function QuestionRow({
-  appId,
-  question,
-  onUpdate,
-  onDelete,
-  onRegenerate,
-  isDraft,
-  onPersist,
-}: {
-  appId:        string;
-  question:     Question;
-  onUpdate:     (q: Question) => void;
-  onDelete:     (id: string) => void;
-  onRegenerate: (q: Question) => void;
-  isDraft?:     boolean;
-  onPersist?:   (tempId: string, persisted: Question) => void;
-}) {
-  const [text, setText]               = useState(question.question_text);
-  const [textSaved, setTextSaved]     = useState(true);
-  const [draftLength, setDraftLength] = useState<ResponseLength>(question.response_length);
-  const [draftResearch, setDraftResearch] = useState<number>(question.needs_research);
-  const saveTimer                     = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const effectiveLength   = isDraft ? draftLength   : question.response_length;
-  const effectiveResearch = isDraft ? draftResearch : question.needs_research;
-
-  async function patchQuestion(patch: Partial<Question>) {
-    if (isDraft) return;
-    const res = await fetch(`${API}/questions/${appId}/${question.id}`, {
-      method:  "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify(patch),
-    });
-    if (res.ok) {
-      const updated = await res.json();
-      onUpdate({ ...updated, answer: question.answer, effective_answer: question.effective_answer });
-    }
-  }
-
-  function handleTextChange(val: string) {
-    setText(val);
-    setTextSaved(false);
-    if (isDraft) return;
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(async () => {
-      await patchQuestion({ question_text: val } as any);
-      setTextSaved(true);
-    }, 800);
-  }
-
-  async function handleTextBlur() {
-    if (!isDraft || !text.trim()) return;
-    const res = await fetch(`${API}/questions/${appId}`, {
-      method:  "POST",
-      headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify({
-        question_text:   text.trim(),
-        response_length: draftLength,
-        needs_research:  draftResearch,
-        sort_order:      question.sort_order,
-      }),
-    });
-    if (res.ok) {
-      const persisted = await res.json();
-      onPersist?.(question.id, { ...persisted, answer: null, effective_answer: null });
-    }
-  }
-
-  async function handleDelete() {
-    if (isDraft) {
-      onDelete(question.id);
-      return;
-    }
-    await fetch(`${API}/questions/${appId}/${question.id}`, { method: "DELETE" });
-    onDelete(question.id);
-  }
-
-  function handleLengthChange(val: ResponseLength) {
-    if (isDraft) {
-      setDraftLength(val);
-    } else {
-      patchQuestion({ response_length: val } as any);
-    }
-  }
-
-  function handleResearchChange(checked: boolean) {
-    if (isDraft) {
-      setDraftResearch(checked ? 1 : 0);
-    } else {
-      patchQuestion({ needs_research: checked ? 1 : 0 } as any);
-    }
-  }
-
-  return (
-    <div className="bg-bg-surface border border-bg-border rounded-xl px-4 py-3 space-y-3">
-      {/* Question input row */}
-      <div className="flex gap-2 items-start">
+      <div>
         <textarea
           value={text}
-          onChange={(e) => handleTextChange(e.target.value)}
-          onBlur={handleTextBlur}
-          placeholder="Enter application question…"
-          rows={2}
-          // eslint-disable-next-line jsx-a11y/no-autofocus
-          autoFocus={isDraft}
-          className="flex-1 px-3 py-2 text-sm text-text-primary bg-bg-elevated border border-bg-border rounded-lg resize-y focus:outline-none focus:ring-2 focus:ring-accent/40 placeholder-text-muted leading-relaxed"
+          onChange={(e) => onType(e.target.value)}
+          onBlur={flush}
+          rows={q.response_length === "paragraph" ? 7 : 4}
+          disabled={busy !== null}
+          placeholder="Write your answer here, in your own words. Rough is fine: you can ask for it to be improved."
+          aria-label="Your answer"
+          className="w-full px-3 py-2 text-sm bg-bg-elevated border border-bg-border rounded-lg resize-y leading-relaxed text-text-primary placeholder-text-muted focus:outline-none focus:ring-2 focus:ring-accent/40 disabled:opacity-60"
         />
-        <button
-          onClick={handleDelete}
-          title="Remove question"
-          className="mt-1 text-text-muted hover:text-red-500 transition-colors text-sm flex-shrink-0"
-        >
-          ✕
-        </button>
-      </div>
-
-      {/* Controls row */}
-      <div className="flex items-center gap-4 flex-wrap">
-        {/* Response length */}
-        <div className="flex items-center gap-1.5">
-          <span className="text-xs text-text-muted">Length</span>
-          {LENGTH_OPTIONS.map((opt) => (
-            <button
-              key={opt.value}
-              onClick={() => handleLengthChange(opt.value)}
-              title={opt.hint}
-              className={`px-2.5 py-0.5 text-xs rounded-full border transition-colors ${
-                effectiveLength === opt.value
-                  ? "bg-accent text-white border-accent"
-                  : "border-bg-border text-text-secondary hover:border-accent/50"
-              }`}
-            >
-              {opt.label}
-            </button>
-          ))}
+        <div className="flex justify-between text-xs text-text-muted mt-1">
+          <span className={words > length.max ? "text-amber-700" : ""}>
+            {words} word{words === 1 ? "" : "s"}{words > length.max ? ` · a bit long for "${length.label.toLowerCase()}"` : ""}
+          </span>
+          <span>{state === "saving" ? "Saving…" : state === "saved" ? "Saved" : ""}</span>
         </div>
-
-        {/* Research toggle */}
-        <label className="flex items-center gap-1.5 cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={!!effectiveResearch}
-            onChange={(e) => handleResearchChange(e.target.checked)}
-            className="w-3.5 h-3.5 rounded border-bg-border accent-accent"
-          />
-          <span className="text-xs text-text-secondary">Needs research</span>
-        </label>
-
-        {!isDraft && !textSaved && (
-          <span className="text-[10px] text-text-muted ml-auto">Saving…</span>
-        )}
-        {isDraft && (
-          <span className="text-[10px] text-text-muted ml-auto italic">Unsaved — blur to save</span>
-        )}
       </div>
 
-      {/* Answer */}
-      {question.effective_answer !== null && (
-        <AnswerCard
-          appId={appId}
-          question={question}
-          onRegenerate={onRegenerate}
+      {improved && (
+        <div className="rounded-lg border border-accent/30 bg-accent/5 px-3 py-2.5 space-y-2">
+          <p className="text-xs text-text-secondary">
+            Improved from your version. Your original is kept.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <button onClick={keepMine} className={quietBtn}>Keep mine instead</button>
+            <button onClick={() => setShowOriginal((v) => !v)} className={quietBtn}>
+              {showOriginal ? "Hide my original" : "See my original"}
+            </button>
+          </div>
+          {showOriginal && (
+            <p className="text-sm text-text-secondary whitespace-pre-wrap border-t border-bg-border pt-2 leading-relaxed">{original}</p>
+          )}
+        </div>
+      )}
+
+      {showSteer && (
+        <input
+          value={steer}
+          onChange={(e) => setSteer(e.target.value)}
+          placeholder="Optional: e.g. make it shorter, or lead with the care work"
+          aria-label="What to change"
+          className="w-full px-3 py-2 text-sm bg-bg-elevated border border-bg-border rounded-lg text-text-primary placeholder-text-muted focus:outline-none focus:ring-2 focus:ring-accent/40"
         />
       )}
+
+      {error && <p role="alert" className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
+
+      <div className="flex flex-wrap items-center gap-2">
+        <button onClick={() => run("improving")} disabled={busy !== null || !text.trim()} className={primaryBtn}>
+          {busy === "improving" ? "Improving…" : "Improve my answer"}
+        </button>
+        <button onClick={() => setShowSteer((v) => !v)} className={quietBtn}>{showSteer ? "No steer" : "Add a steer"}</button>
+        <button
+          onClick={() => {
+            if (text.trim() && !window.confirm("Write a fresh answer? Your current text will be replaced (your original stays in the history).")) return;
+            run("writing");
+          }}
+          disabled={busy !== null}
+          className={quietBtn}>
+          {busy === "writing" ? "Writing…" : "Write one for me"}
+        </button>
+        {text.trim() && <button onClick={copy} className={quietBtn}>{copied ? "Copied" : "Copy"}</button>}
+      </div>
     </div>
   );
 }
 
-// ── Main panel ────────────────────────────────────────────────────────────────
+// ── The panel ────────────────────────────────────────────────────────────────
 
-export default function QuestionsPanel({
-  appId,
-  initialTone,
-  onToneChange,
-}: {
-  appId:        string;
-  initialTone:  QaTone;
-  onToneChange: (t: QaTone) => void;
-}) {
-  const [questions,  setQuestions]  = useState<Question[]>([]);
-  const [loading,    setLoading]    = useState(true);
-  const [generating, setGenerating] = useState(false);
-  const [tone,       setTone]       = useState<QaTone>(initialTone);
-  const [error,      setError]      = useState<string | null>(null);
+export default function QuestionsPanel({ appId }: { appId: string }) {
+  const [questions, setQuestions] = useState<Question[] | null>(null);
+  const [tone, setTone] = useState<Tone>("professional");
+  const [error, setError] = useState<string | null>(null);
+  const [newText, setNewText] = useState("");
+  const [newLength, setNewLength] = useState<Length>("short");
+  const [adding, setAdding] = useState(false);
 
-  useEffect(() => { loadQuestions(); }, [appId]);
-  useEffect(() => { setTone(initialTone); }, [initialTone]);
-
-  async function loadQuestions() {
-    setLoading(true);
+  const load = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/questions/${appId}`);
-      if (res.ok) setQuestions(await res.json());
-    } finally {
-      setLoading(false);
+      setQuestions(await api.get(`/questions/${appId}`));
+    } catch {
+      setError("Couldn't load the questions. Please refresh.");
     }
+  }, [appId]);
+
+  useEffect(() => {
+    load();
+    api.get(`/applications/${appId}`).then((a: any) => a?.qa_tone && setTone(a.qa_tone)).catch(() => {});
+  }, [appId, load]);
+
+  async function chooseTone(t: Tone) {
+    const before = tone;
+    setTone(t);
+    try { await api.patch(`/applications/${appId}`, { qa_tone: t }); } catch { setTone(before); }
   }
 
-  function addQuestion() {
-    const tempId    = `draft-${crypto.randomUUID()}`;
-    const nextOrder = questions.length;
-    const draft: Question = {
-      id:               tempId,
-      application_id:   appId,
-      question_text:    "",
-      response_length:  "short",
-      needs_research:   0,
-      sort_order:       nextOrder,
-      created_at:       new Date().toISOString(),
-      answer:           null,
-      effective_answer: null,
-      isDraft:          true,
-    };
-    setQuestions((prev) => [...prev, draft]);
-  }
-
-  async function generateAnswers() {
-    setGenerating(true);
+  async function addQuestion() {
+    const text = newText.trim();
+    if (!text) return;
+    setAdding(true);
     setError(null);
     try {
-      // Queued as a background job; runJob follows it until the answers are written.
-      await runJob(`/questions/${appId}/generate`, { force: false });
-      // Reload questions to pick up the new answers
-      await loadQuestions();
+      await api.post(`/questions/${appId}`, { question_text: text, response_length: newLength, sort_order: questions?.length ?? 0 });
+      setNewText("");
+      await load();
     } catch (e: any) {
-      setError(e.message);
+      setError(e?.message || "Couldn't add that question.");
     } finally {
-      setGenerating(false);
+      setAdding(false);
     }
   }
-
-  function handleToneChange(t: QaTone) {
-    setTone(t);
-    onToneChange(t);
-  }
-
-  function handleQuestionUpdate(updated: Question) {
-    setQuestions((prev) =>
-      prev.map((q) => (q.id === updated.id ? updated : q))
-    );
-  }
-
-  function handlePersist(tempId: string, persisted: Question) {
-    setQuestions((prev) =>
-      prev.map((q) => (q.id === tempId ? persisted : q))
-    );
-  }
-
-  function handleQuestionDelete(id: string) {
-    setQuestions((prev) => prev.filter((q) => q.id !== id));
-  }
-
-  function handleRegenerate(updated: Question) {
-    setQuestions((prev) =>
-      prev.map((q) => (q.id === updated.id ? updated : q))
-    );
-  }
-
-  const unansweredCount = questions.filter((q) => !q.effective_answer).length;
-  const hasQuestions    = questions.length > 0;
 
   return (
     <div className="space-y-4">
-      {/* Tone selector */}
-      <div className="bg-bg-surface border border-bg-border rounded-xl px-5 py-3">
-        <ToneSelector appId={appId} tone={tone} onUpdate={handleToneChange} />
+      <div>
+        <h2 className="text-sm font-semibold text-text-primary">Application questions</h2>
+        <p className="text-xs text-text-muted mt-0.5 leading-relaxed">
+          Paste each question from the application form, then write your own answer. Ask for it to be
+          improved and it keeps your facts and your voice; your original is always kept.
+        </p>
       </div>
 
-      {/* Error */}
-      {error && (
-        <div className="px-4 py-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
-          {error}
-        </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs text-text-muted">Style</span>
+        {TONES.map((t) => (
+          <button key={t.value} onClick={() => chooseTone(t.value)}
+            className={`min-h-11 sm:min-h-0 px-3 py-1.5 text-xs rounded-full border transition-colors ${
+              tone === t.value ? "bg-accent text-white border-accent" : "text-text-secondary border-bg-border hover:bg-bg-elevated"
+            }`}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {error && <p role="alert" className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
+
+      {questions === null && !error && <p className="text-sm text-text-muted">Loading…</p>}
+
+      {questions?.map((q) => (
+        <QuestionCard key={q.id} appId={appId} q={q} onChanged={load} onDeleted={load} />
+      ))}
+
+      {questions?.length === 0 && (
+        <p className="text-sm text-text-muted bg-bg-surface border border-dashed border-bg-border rounded-xl px-4 py-6 text-center">
+          No questions yet. Add the first one below.
+        </p>
       )}
 
-      {/* Question list */}
-      {loading ? (
-        <p className="text-sm text-text-muted px-1">Loading questions…</p>
-      ) : (
-        <div className="space-y-3">
-          {questions.map((q) => (
-            <QuestionRow
-              key={q.id}
-              appId={appId}
-              question={q}
-              onUpdate={handleQuestionUpdate}
-              onDelete={handleQuestionDelete}
-              onRegenerate={handleRegenerate}
-              isDraft={q.isDraft}
-              onPersist={handlePersist}
-            />
+      <div className="bg-bg-surface border border-bg-border rounded-xl p-4 space-y-3">
+        <label htmlFor="new-question" className="text-xs font-medium text-text-secondary">Add a question</label>
+        <textarea
+          id="new-question"
+          value={newText}
+          onChange={(e) => setNewText(e.target.value)}
+          rows={2}
+          placeholder="Paste the question exactly as the application asks it"
+          className="w-full px-3 py-2 text-sm bg-bg-elevated border border-bg-border rounded-lg resize-y text-text-primary placeholder-text-muted focus:outline-none focus:ring-2 focus:ring-accent/40"
+        />
+        <div className="flex flex-wrap items-center gap-2">
+          {LENGTHS.map((l) => (
+            <button key={l.value} onClick={() => setNewLength(l.value)}
+              className={`min-h-11 sm:min-h-0 px-3 py-1.5 text-xs rounded-full border transition-colors ${
+                newLength === l.value ? "bg-accent text-white border-accent" : "text-text-secondary border-bg-border hover:bg-bg-elevated"
+              }`}>
+              {l.label} <span className="opacity-70">· {l.hint}</span>
+            </button>
           ))}
+          <button onClick={addQuestion} disabled={adding || !newText.trim()} className={`${primaryBtn} sm:ml-auto`}>
+            {adding ? "Adding…" : "Add question"}
+          </button>
         </div>
-      )}
-
-      {/* Actions */}
-      <div className="flex items-center gap-3 flex-wrap">
-        <button
-          onClick={addQuestion}
-          className="px-3 py-1.5 text-xs font-medium border border-bg-border text-text-secondary rounded-lg hover:text-text-primary hover:border-accent/50 transition-colors"
-        >
-          + Add question
-        </button>
-
-        {hasQuestions && unansweredCount > 0 && (
-          <button
-            onClick={generateAnswers}
-            disabled={generating}
-            className="px-3 py-1.5 text-xs font-medium bg-accent text-white rounded-lg hover:bg-accent-dim transition-colors disabled:opacity-50 flex items-center gap-1.5"
-          >
-            {generating ? (
-              <>
-                <span className="w-3 h-3 border border-white/30 border-t-white rounded-full animate-spin" />
-                Generating…
-              </>
-            ) : (
-              `Generate ${unansweredCount === questions.length ? "answers" : `${unansweredCount} remaining`}`
-            )}
-          </button>
-        )}
-
-        {hasQuestions && unansweredCount === 0 && (
-          <button
-            onClick={generateAnswers}
-            disabled={generating}
-            className="px-3 py-1.5 text-xs font-medium border border-bg-border text-text-secondary rounded-lg hover:border-accent/50 transition-colors disabled:opacity-50"
-          >
-            {generating ? "Regenerating…" : "Regenerate all"}
-          </button>
-        )}
       </div>
     </div>
   );

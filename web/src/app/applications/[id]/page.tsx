@@ -10,12 +10,13 @@ import { STATUS_LABELS } from "@/lib/statuses";
 import { decodeEntities } from "@/lib/text";
 import StatusPicker from "@/components/ui/StatusPicker";
 import CoverLetterPanel from "@/components/CoverLetterPanel";
+import QuestionsPanel from "@/components/QuestionsPanel";
 import { FLAG_LABELS, OUTCOME_HINTS, OUTCOME_STYLES, STAGE_LABELS, type Outcome } from "@/lib/outcomes";
 
 import { api } from "@/lib/api";
 const API = api.url;
 
-type ViewMode = "preview" | "raw" | "reasoning" | "jd" | "history" | "cover_letter";
+type ViewMode = "preview" | "raw" | "reasoning" | "jd" | "history" | "cover_letter" | "questions";
 
 const ARRANGEMENT_LABELS: Record<string, string> = {
   remote: "Remote",
@@ -602,6 +603,7 @@ export default function ApplicationPage() {
   const views: ViewMode[] = [
     "preview",
     "cover_letter",
+    "questions",
     ...(hasJd ? (["jd"] as ViewMode[]) : []),
     "history",
   ];
@@ -615,6 +617,7 @@ export default function ApplicationPage() {
     reasoning:    "🧠 Reasoning",
     history:      "History",
     cover_letter: "Cover letter",
+    questions:    "Questions",
   };
 
   return (
@@ -748,6 +751,7 @@ export default function ApplicationPage() {
       )}
 
       {view === "cover_letter" && <CoverLetterPanel appId={id} />}
+      {view === "questions"    && <QuestionsPanel appId={id} />}
     </div>
   );
 }

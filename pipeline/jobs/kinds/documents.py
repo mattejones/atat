@@ -193,3 +193,72 @@ class GenerateAnswers(JobKind):
                     "user_answer": None, "effective_answer": answer_text,
                 })
         return {"generated": len(saved), "skipped": skipped, "answers": saved}
+
+
+@register
+class ImproveAnswer(JobKind):
+    name        = "improve_answer"
+    target      = "application"
+    description = ("Improve the applicant's OWN answer to an application question, keeping their facts and "
+                   "voice. The improved text becomes the live answer; their original is kept so it can be restored.")
+    params      = {
+        "question_id": Param(str, required=True, help="The question whose answer to improve."),
+        "draft":       Param(str, help="The text to improve. Default: the question's current answer."),
+        "instruction": Param(str, help="Optional steer, e.g. 'make it shorter' or 'lead with the care work'."),
+    }
+
+    def _load(self, ctx: JobContext, params: dict) -> tuple[dict, str]:
+        with get_connection() as db:
+            q = db.execute(
+                "SELECT * FROM application_questions WHERE id = ? AND application_id = ?",
+                (params["question_id"], ctx.application["id"]),
+            ).fetchone()
+            if not q:
+                raise JobError("Question not found on this application.")
+            draft = (params["draft"] or "").strip()
+            if not draft:
+                a = db.execute(
+                    "SELECT user_answer, ai_answer FROM application_answers WHERE question_id = ? "
+                    "ORDER BY created_at DESC LIMIT 1", (q["id"],)).fetchone()
+                draft = ((a["user_answer"] or a["ai_answer"]) if a else "") or ""
+        if not draft.strip():
+            raise JobError("There is no answer to improve yet. Write one first.")
+        return dict(q), draft.strip()
+
+    def check(self, ctx: JobContext, params: dict) -> None:
+        self._load(ctx, params)
+
+    def preview(self, ctx: JobContext, params: dict) -> Prompt:
+        from pipeline.question_answerer import build_improve_prompt
+        app = ctx.application
+        q, draft = self._load(ctx, params)
+        system, user = build_improve_prompt(
+            q["question_text"], q["response_length"], draft, app.get("jd_text") or "",
+            app.get("cv_markdown") or "", app.get("notes"), app.get("qa_tone") or "professional",
+            params["instruction"])
+        return Prompt(system, user)
+
+    def run(self, ctx: JobContext, params: dict, handle: JobHandle) -> dict:
+        from pipeline.question_answerer import _QA_MODEL, improve_answer
+
+        app = ctx.application
+        q, draft = self._load(ctx, params)
+        try:
+            improved = improve_answer(
+                q["question_text"], q["response_length"], draft, app.get("jd_text") or "",
+                app.get("cv_markdown") or "", app.get("notes"), app.get("qa_tone") or "professional",
+                params["instruction"])
+        except (RuntimeError, FileNotFoundError) as e:
+            raise JobError(str(e)) from e
+
+        handle.checkpoint()
+        answer_id = str(uuid.uuid4())
+        with get_connection() as db:
+            db.execute(
+                """INSERT INTO application_answers
+                   (id, question_id, application_id, ai_answer, user_answer, source_draft, model_used, created_at)
+                   VALUES (?, ?, ?, ?, NULL, ?, ?, ?)""",
+                (answer_id, q["id"], app["id"], improved, draft, _QA_MODEL, now_iso()),
+            )
+        return {"question_id": q["id"], "answer_id": answer_id, "ai_answer": improved,
+                "source_draft": draft, "effective_answer": improved}

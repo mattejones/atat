@@ -61,6 +61,7 @@ export const KIND_LABELS: Record<string, string> = {
   regenerate_section:    "Retry section",
   generate_cover_letter: "Cover letter",
   generate_answers:      "Answer questions",
+  improve_answer:        "Improve answer",
   gmail_sync:            "Gmail sync",
 };
 
