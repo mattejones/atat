@@ -374,7 +374,8 @@ def build_typst_doc(cv: ParsedCV, company: str = "") -> str:
 
     # Every profile paragraph is its own #par. The global `#set par(spacing: 0pt)` means a
     # blank line inside one #par would not separate them, so the gap is explicit.
-    profile_block = '\n#v(6pt)\n'.join(
+    import pipeline.config as cfg
+    profile_block = f'\n#v({cfg.PROFILE_PARAGRAPH_GAP:g}pt)\n'.join(
         f'#par(leading:6.5pt)[#text(font:"Poppins",size:9.5pt,weight:"regular",'
         f'fill:rgb("{P["body"]}"))[{esc(p)}]]'
         for p in cv.profile

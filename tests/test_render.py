@@ -486,3 +486,44 @@ def test_education_with_wrapping_honours_renders_and_saves_a_2x_png(tmp_path):
     png = tmp_path / "education_2x.png"
     png.write_bytes(pages[0])
     assert png.stat().st_size > 1000 and png.read_bytes()[:4] == b"\x89PNG"
+
+
+# ── Profile paragraphs must read as separate paragraphs ────────────────────────────────────
+
+def _line_ys(pdf_path) -> list:
+    """Baseline y of each text line on page 1, top to bottom, via pypdf."""
+    pypdf = pytest.importorskip("pypdf")
+    ys = []
+
+    def visit(text, cm, tm, font_dict, font_size):
+        if text.strip():
+            ys.append(round(cm[5], 1))   # Typst places text with the cm matrix, not tm
+
+    pypdf.PdfReader(str(pdf_path)).pages[0].extract_text(visitor_text=visit)
+    return sorted(set(ys), reverse=True)
+
+
+def test_a_profile_paragraph_break_is_clearly_bigger_than_a_line_break(tmp_path):
+    cv = _rich_cv()
+    cv.profile = [
+        "First paragraph about who she is and what she has done across a number of years in the "
+        "sector, with enough words to wrap onto a second line of text on the page.",
+        "Second paragraph with the evidence, again long enough that it wraps to a second line on "
+        "the page for certain, so there are four lines in all.",
+    ]
+    _compile(build_typst_doc(cv), tmp_path)
+    ys = _line_ys(tmp_path / "cv.pdf")
+    # the four profile lines are the first four below the header's name/contact lines
+    prof = [y for y in ys if 600 < y < 720][:4]
+    assert len(prof) == 4, prof
+    line_pitch = prof[0] - prof[1]
+    para_pitch = prof[1] - prof[2]
+    assert para_pitch >= line_pitch * 1.3, (
+        f"paragraph break ({para_pitch}pt) is not clearly bigger than a line break ({line_pitch}pt)")
+
+
+def test_the_paragraph_gap_is_a_setting(monkeypatch):
+    import pipeline.config as config
+    monkeypatch.setattr(config, "PROFILE_PARAGRAPH_GAP", 14.0)
+    cv = _rich_cv()
+    assert "#v(14pt)" in build_typst_doc(cv)

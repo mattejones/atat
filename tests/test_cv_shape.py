@@ -207,7 +207,7 @@ def test_the_pdf_renders_every_profile_paragraph_with_a_gap():
     assert doc.count('#par(leading:6.5pt)') == 2
     assert "First paragraph about who she is." in doc and "Second paragraph with the evidence." in doc
     between = doc.split("First paragraph about who she is.")[1].split("Second paragraph")[0]
-    assert "#v(6pt)" in between
+    assert "#v(11pt)" in between
 
 
 def test_parsed_cv_still_accepts_a_plain_string_profile():

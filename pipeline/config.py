@@ -115,6 +115,13 @@ try:
     HEADING_TRACKING = max(0.0, float(os.getenv("HEADING_TRACKING", "0.5")))
 except ValueError:
     HEADING_TRACKING = 0.5
+# PROFILE_PARAGRAPH_GAP — space in points between profile paragraphs. Lines are measured cap-height
+#   to baseline, so a small gap (6pt) looks no bigger than the line spacing and the two paragraphs
+#   run together; 11 reads clearly as a paragraph break.
+try:
+    PROFILE_PARAGRAPH_GAP = max(0.0, float(os.getenv("PROFILE_PARAGRAPH_GAP", "11")))
+except ValueError:
+    PROFILE_PARAGRAPH_GAP = 11.0
 # MAX_CV_PAGES — a rendered CV longer than this is flagged (a warning on the application, like the
 #   unreviewed-CV warning; nothing is cut or blocked). 0 turns the check off.
 try:
