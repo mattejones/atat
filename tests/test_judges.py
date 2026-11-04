@@ -513,3 +513,56 @@ def test_generation_prompt_carries_the_bullet_counts_only_when_weights_exist(tmp
     assert "BULLETS PER ROLE" in tailorer._bullets_block()
     monkeypatch.setattr(wt, "library_weights", lambda *a, **k: [])
     assert tailorer._bullets_block() == ""
+
+
+# ── Weights must work for libraries whose titles have no "Experience:" prefix ──────────────
+
+def _bare_library(tmp_path):
+    d = tmp_path / "bare"
+    d.mkdir()
+    (d / "2020-now_oxford_md.md").write_text(
+        "# Oxford Aunts — Managing Director\n**CV weight:** lead\n", encoding="utf-8")
+    (d / "2018-2020_carebrain_x.md").write_text(
+        "# CareBrain - Head of Care\n**CV weight:** brief\n", encoding="utf-8")
+    (d / "2015-2018_good_area.md").write_text(
+        "# The Good Care Group — Area Manager, South\n**CV weight:** brief\n", encoding="utf-8")
+    return d
+
+
+def test_titles_without_the_experience_prefix_are_read(tmp_path):
+    ws = wt.library_weights(_bare_library(tmp_path))
+    assert {(w["company"], w["weight"]) for w in ws} == {
+        ("Oxford Aunts", "lead"), ("CareBrain", "brief"), ("The Good Care Group", "brief")}
+
+
+def test_a_cv_heading_with_a_suffix_still_matches_its_library_company(tmp_path):
+    ws = wt.library_weights(_bare_library(tmp_path))
+    assert wt.weight_for("Oxford Aunts (The Good Care Group)", "Managing Director", ws)["weight"] == "lead"
+    assert wt.weight_for("CareBrain (acquired by QCS)", "Head of Care", ws)["weight"] == "brief"
+    assert wt.weight_for("The Good Care Group", "Area Manager, South", ws)["weight"] == "brief"
+    assert wt.weight_for("Unrelated Ltd", "X", ws) is None
+
+
+def test_a_longer_company_name_wins_over_a_shorter_prefix():
+    ws = [{"company": "Care", "role": "", "weight": "brief", "min": 0, "max": 1},
+          {"company": "Care Brain", "role": "", "weight": "lead", "min": 4, "max": 6}]
+    assert wt.weight_for("Care Brain (acquired)", "", ws)["weight"] == "lead"
+
+
+def test_the_judge_counts_a_suffixed_heading_against_its_weight(tmp_path):
+    ctx = _ctx(section="experience", jd="")
+    ctx.role_weights = wt.library_weights(_bare_library(tmp_path))
+    bl = "".join(f"- Bullet number {i} describing a distinct piece of real work done here.\n" for i in range(2))
+    text = f"### Oxford Aunts (The Good Care Group) — Managing Director | 2020 - Present\n{bl}"
+    flags = _bc(det.run(text, ctx))
+    assert len(flags) == 1 and "calls for 4-6" in flags[0].message
+
+
+def test_a_weighted_file_without_a_parseable_title_is_warned_about(tmp_path, caplog):
+    d = tmp_path / "notitle"
+    d.mkdir()
+    (d / "2020-now_x.md").write_text("Just some text\n**CV weight:** lead\n", encoding="utf-8")
+    import logging
+    with caplog.at_level(logging.WARNING):
+        assert wt.library_weights(d) == []
+    assert "2020-now_x.md" in caplog.text and "title" in caplog.text.lower()

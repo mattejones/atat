@@ -11,13 +11,17 @@ The weight is passed to the generation prompt and checked by the deterministic j
 no header has no bounds at all, which is how every role behaved before this existed.
 """
 
+import logging
 import re
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 BOUNDS: dict = {"lead": (4, 6), "standard": (2, 4), "brief": (0, 1)}
 
 _WEIGHT = re.compile(r"^\s*\*\*CV weight:?\*\*:?\s*([A-Za-z]+)", re.IGNORECASE | re.MULTILINE)
-_TITLE = re.compile(r"^#\s+Experience:\s*(.+?)\s*$", re.MULTILINE | re.IGNORECASE)
+# The first "# Title" line, with or without an "Experience:" prefix.
+_TITLE = re.compile(r"^#[ 	]+(?:Experience:[ 	]*)?(\S.*?)[ 	]*$", re.MULTILINE | re.IGNORECASE)
 
 
 def parse_weight(text: str):
@@ -43,7 +47,10 @@ def library_weights(directory: Path = None) -> list:
         text = load_text(f)
         weight = parse_weight(text)
         title = _TITLE.search(text)
-        if not weight or not title:
+        if not weight:
+            continue
+        if not title:
+            log.warning("%s has a CV weight but no '# Company — Role' title line, so it is ignored", f.name)
             continue
         company, role = _split_title(title.group(1))
         lo, hi = BOUNDS[weight]
@@ -56,12 +63,25 @@ def _norm(s: str) -> str:
 
 
 def weight_for(company: str, role: str, weights: list):
-    """The weight entry for a CV role heading, matched on company (and role if several match)."""
+    """
+    The weight entry for a CV role heading. A CV heading often carries more than the library's
+    company name ("Oxford Aunts (The Good Care Group)"), so the library company matches when it is
+    the whole heading company or its start, on word boundaries. The longest such name wins; a tie
+    is broken by role.
+    """
     c, r = _norm(company), _norm(role)
-    hits = [w for w in weights if _norm(w["company"]) and _norm(w["company"]) == c]
-    if len(hits) > 1:
-        hits = [w for w in hits if _norm(w["role"]) == r] or hits
-    return hits[0] if hits else None
+    hits = []
+    for w in weights:
+        wc = _norm(w["company"])
+        if wc and (c == wc or c.startswith(wc + " ")):
+            hits.append((len(wc), w))
+    if not hits:
+        return None
+    best = max(n for n, _ in hits)
+    top = [w for n, w in hits if n == best]
+    if len(top) > 1:
+        top = [w for w in top if _norm(w["role"]) == r] or top
+    return top[0]
 
 
 def describe(weights: list) -> str:
