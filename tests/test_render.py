@@ -444,3 +444,45 @@ def test_the_length_warning_reaches_the_warning_list_the_unreviewed_warning_uses
     assert any("3 pages" in w for w in warning_fields(db, "app1")["warnings"])
     monkeypatch.setattr(config, "MAX_CV_PAGES", 3)
     assert warning_fields(db, "app1")["warnings"] == []
+
+
+# ── Education block spacing ────────────────────────────────────────────────────────────────
+
+def _edu_cv() -> ParsedCV:
+    long_honour = ("Awarded the Faculty Prize for outstanding achievement across the programme, "
+                   "together with a named university scholarship and a place on the dean's list "
+                   "in each year of study, recognised at the annual ceremony")
+    return ParsedCV(
+        name="Jane Doe", contact="jane@example.com", profile=["A profile."],
+        experience=[ExperienceEntry("Acme", "Lead", "2020 - 2022", "", ["A bullet."])],
+        skills=[("Ops", "Planning")],
+        education=[EducationEntry("BA Hons", "Western University", "2008 - 2011",
+                                  "Psychology; Sociology",
+                                  honours=[long_honour, "Short prize 2010", long_honour])],
+        certifications=[],
+    )
+
+
+def test_education_spacing_is_explicit_in_the_typst():
+    doc = build_typst_doc(_edu_cv())
+    edu = doc[doc.index("Western University"):]
+    # a gap after the institution line (5pt) and after the majors line (6pt)
+    assert "#v(5pt)" in edu and "#v(6pt)" in edu
+    # every honours line is its own paragraph with its own leading, behind a dot marker
+    assert edu.count("#par(leading:6pt)") == 3
+    # and a gap between consecutive honours lines (two gaps for three lines)
+    assert edu.count("#v(5pt)") >= 3
+
+
+def test_education_with_wrapping_honours_renders_and_saves_a_2x_png(tmp_path):
+    typst_lib = pytest.importorskip("typst")
+    typ = tmp_path / "cv.typ"
+    typ.write_text(build_typst_doc(_edu_cv()), encoding="utf-8")
+    compiler = typst_lib.Compiler(input=str(typ), root=str(tmp_path),
+                                  font_paths=[str(FONTS_DIR)], ignore_system_fonts=True)
+    # 144 ppi = 2x the 72 ppi default, to look at the spacing by eye
+    pages = compiler.compile(format="png", ppi=144.0)
+    pages = pages if isinstance(pages, list) else [pages]
+    png = tmp_path / "education_2x.png"
+    png.write_bytes(pages[0])
+    assert png.stat().st_size > 1000 and png.read_bytes()[:4] == b"\x89PNG"

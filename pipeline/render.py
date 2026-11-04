@@ -288,19 +288,28 @@ def _render_edu(e: EducationEntry) -> str:
     lines = [
         f'#text(font:"Poppins",size:9.5pt,weight:"semibold",fill:rgb("{P["body"]}"))[{deg}]',
         '#v(5pt)',   # the institution line sat too tight under the degree title at 3pt
-        f'#text(font:"Poppins",size:8.5pt,weight:"regular",fill:rgb("{P["second"]}"))[{inst} \u00b7 {yrs}]',
+        f'#text(font:"Poppins",size:8.5pt,weight:"regular",fill:rgb("{P["second"]}"))[{inst} · {yrs}]',
+        '#v(5pt)',
     ]
     if subj:
         lines += [
-            '#v(2pt)',
             f'#text(font:"Poppins",size:8.5pt,style:"italic",fill:rgb("{P["second"]}"))[{subj}]',
+            '#v(6pt)',
         ]
     # Prizes, scholarships and merit lists: one short line each, not folded into the subjects.
-    for h in getattr(e, 'honours', None) or []:
-        lines += [
-            '#v(2pt)',
-            f'#text(font:"Poppins",size:8.5pt,weight:"regular",fill:rgb("{P["second"]}"))[{esc(h)}]',
-        ]
+    # Each is its own #par with explicit leading so one that wraps keeps its lines apart, and a gap
+    # between them so neighbouring lines never touch.
+    honours = [h for h in (getattr(e, 'honours', None) or []) if h]
+    for i, h in enumerate(honours):
+        if i:
+            lines.append('#v(5pt)')
+        # A dot marks each item, so a line that wraps reads as one item rather than two.
+        lines.append(
+            f'#grid(columns:(12pt,1fr),align:(center+top,left+top),'
+            f'[{_bullet_marker(12)}],\n'
+            f'[#par(leading:6pt)[#text(font:"Poppins",size:8.5pt,weight:"regular",'
+            f'fill:rgb("{P["second"]}"))[{esc(h)}]]])'
+        )
     lines.append('#v(10pt)')
     return '\n'.join(lines)
 
