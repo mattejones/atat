@@ -459,6 +459,9 @@ def build_typst_doc(cv: ParsedCV, company: str = "") -> str:
         certs_section,
         '',
         '] // end body pad',
+        # Invisible: lets render_cv ask the compiler how long the document came out.
+        '#context [#metadata((pages: counter(page).final().first(), '
+        'end-y: here().position().y.pt())) <atat-layout>]',
     ])
 
 
@@ -502,7 +505,46 @@ def render_cv(cv_md_path: Path, output_dir: Path, company: str = "") -> Path:
     except typst_lib.TypstError as e:
         raise RuntimeError(f"Typst compilation failed: {e}") from e
 
+    _record_layout(compiler, output_dir)
     return pdf_path
+
+
+LAYOUT_FILE = "cv.layout.json"
+_LINE_PT = 13.5   # a body line plus its leading, to say how far onto an extra page a CV runs
+
+
+def _record_layout(compiler, output_dir: Path) -> None:
+    """Save how many pages the CV came out at, so the review status can flag one that is too long.
+    Never fatal: a CV without this record just goes unchecked."""
+    try:
+        import json
+        meta = json.loads(compiler.query(selector="<atat-layout>", field="value"))[0]
+        layout = {"pages": int(meta["pages"]), "end_y_pt": float(meta["end-y"])}
+        (output_dir / LAYOUT_FILE).write_text(json.dumps(layout), encoding="utf-8")
+    except Exception:
+        log.warning("Could not read the page count of the rendered CV", exc_info=True)
+
+
+def read_layout(output_dir: Path):
+    """The layout record written by render_cv, or None."""
+    try:
+        import json
+        return json.loads((Path(output_dir) / LAYOUT_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def length_warning(layout, max_pages: int):
+    """A warning when the rendered CV is longer than `max_pages` (0 = no limit), else None."""
+    if not layout or not max_pages or layout.get("pages", 0) <= max_pages:
+        return None
+    pages = layout["pages"]
+    msg = f"This CV renders to {pages} pages; the limit is {max_pages}."
+    if pages == max_pages + 1:
+        top_pt = float(PAGE_TOP.rstrip("mm")) * 72 / 25.4
+        lines = max(1, round((layout.get("end_y_pt", 0) - top_pt) / _LINE_PT))
+        msg += f" It runs about {lines} line{'s' if lines != 1 else ''} onto page {pages}."
+    return msg + " Shorten it before sending; nothing has been cut."
 
 
 # ── Cover letter document builder ────────────────────────────────────────────────

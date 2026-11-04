@@ -40,7 +40,22 @@ def review_status(db: sqlite3.Connection, application_id) -> dict:
     return {"total": total, "accepted": accepted, "unaccepted": unaccepted, "warning": warning}
 
 
+def length_status(db: sqlite3.Connection, application_id):
+    """Warning if the last rendered PDF is over MAX_CV_PAGES, else None (also None if never rendered)."""
+    from pathlib import Path
+    from pipeline import config
+    from pipeline.render import length_warning, read_layout
+
+    row = db.execute("SELECT output_dir FROM applications WHERE id = ?", (application_id,)).fetchone()
+    out_dir = Path(row["output_dir"]) if row and row["output_dir"] else config.OUTPUT_PATH / str(application_id)
+    return length_warning(read_layout(out_dir), config.MAX_CV_PAGES)
+
+
 def warning_fields(db: sqlite3.Connection, application_id) -> dict:
     """`{"review": {...}, "warnings": [...]}`, ready to merge into an API or MCP response."""
     review = review_status(db, application_id)
-    return {"review": review, "warnings": [review["warning"]] if review["warning"] else []}
+    warnings = [review["warning"]] if review["warning"] else []
+    too_long = length_status(db, application_id)
+    if too_long:
+        warnings.append(too_long)
+    return {"review": review, "warnings": warnings}

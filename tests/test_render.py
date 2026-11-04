@@ -372,3 +372,75 @@ def test_a_role_header_is_never_left_at_the_foot_of_a_page_without_its_first_bul
             stranded.append((n, co_page, bu_page))
     assert seen_break, "sweep never pushed the role onto page 2, so it proved nothing"
     assert not stranded, f"role header separated from its first bullet at: {stranded}"
+
+
+# ── Page-count check ───────────────────────────────────────────────────────────────────────
+
+def _layout_of(cv: ParsedCV, tmp_path) -> dict:
+    """Compile a CV and read back the layout record render_cv writes beside the PDF."""
+    typst_lib = pytest.importorskip("typst")
+    from pipeline.render import _record_layout, read_layout
+    typ = tmp_path / "cv.typ"
+    typ.write_text(build_typst_doc(cv), encoding="utf-8")
+    compiler = typst_lib.Compiler(input=str(typ), root=str(tmp_path),
+                                  font_paths=[str(FONTS_DIR)], ignore_system_fonts=True)
+    compiler.compile(output=str(tmp_path / "cv.pdf"), format="pdf")
+    _record_layout(compiler, tmp_path)
+    return read_layout(tmp_path)
+
+
+def _cv_of_roles(n_roles: int) -> ParsedCV:
+    roles = [ExperienceEntry(f"Company{i}", "Role", "2020 - 2021", "Context line.",
+                             [f"Bullet number {j} describing some work done." for j in range(4)])
+             for i in range(n_roles)]
+    return ParsedCV(name="Jane Doe", contact="jane@example.com", profile=["A profile."],
+                    experience=roles, skills=[("Ops", "Planning")], education=[], certifications=[])
+
+
+def test_page_count_is_recorded_and_matches_the_pdf(tmp_path):
+    pypdf = pytest.importorskip("pypdf")
+    for n_roles in (2, 8):
+        d = tmp_path / str(n_roles)
+        d.mkdir()
+        layout = _layout_of(_cv_of_roles(n_roles), d)
+        assert layout["pages"] == len(pypdf.PdfReader(str(d / "cv.pdf")).pages)
+
+
+def test_a_three_page_cv_is_flagged_and_a_two_page_one_is_not(tmp_path):
+    from pipeline.render import length_warning
+    (tmp_path / "short").mkdir()
+    (tmp_path / "long").mkdir()
+    short = _layout_of(_cv_of_roles(9), tmp_path / "short")
+    long_ = _layout_of(_cv_of_roles(20), tmp_path / "long")
+    assert short["pages"] == 2 and long_["pages"] >= 3
+    assert length_warning(short, 2) is None
+    msg = length_warning(long_, 2)
+    assert msg and f"{long_['pages']} pages" in msg and "limit is 2" in msg
+
+
+def test_the_page_limit_can_be_turned_off_and_overflow_is_described():
+    from pipeline.render import length_warning
+    assert length_warning({"pages": 5, "end_y_pt": 300}, 0) is None
+    assert length_warning(None, 2) is None
+    msg = length_warning({"pages": 3, "end_y_pt": 45.35 + 13.5 * 9}, 2)
+    assert "about 9 lines onto page 3" in msg
+
+
+def test_the_length_warning_reaches_the_warning_list_the_unreviewed_warning_uses(tmp_path, monkeypatch):
+    import sqlite3
+    import pipeline.config as config
+    from pipeline.review_status import warning_fields
+
+    layout_dir = tmp_path / "app1"
+    layout_dir.mkdir()
+    (layout_dir / "cv.layout.json").write_text('{"pages": 3, "end_y_pt": 100}', encoding="utf-8")
+    db = sqlite3.connect(":memory:")
+    db.row_factory = sqlite3.Row
+    db.execute("CREATE TABLE applications (id TEXT, output_dir TEXT)")
+    db.execute("CREATE TABLE sections (application_id TEXT, section_name TEXT, accepted_report_id TEXT)")
+    db.execute("INSERT INTO applications VALUES ('app1', ?)", (str(layout_dir),))
+
+    monkeypatch.setattr(config, "MAX_CV_PAGES", 2)
+    assert any("3 pages" in w for w in warning_fields(db, "app1")["warnings"])
+    monkeypatch.setattr(config, "MAX_CV_PAGES", 3)
+    assert warning_fields(db, "app1")["warnings"] == []

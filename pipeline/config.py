@@ -115,6 +115,12 @@ try:
     HEADING_TRACKING = max(0.0, float(os.getenv("HEADING_TRACKING", "0.5")))
 except ValueError:
     HEADING_TRACKING = 0.5
+# MAX_CV_PAGES — a rendered CV longer than this is flagged (a warning on the application, like the
+#   unreviewed-CV warning; nothing is cut or blocked). 0 turns the check off.
+try:
+    MAX_CV_PAGES = max(0, int(os.getenv("MAX_CV_PAGES", "2")))
+except ValueError:
+    MAX_CV_PAGES = 2
 
 # ── Scheduler / auto-ghost ────────────────────────────────────────────────────
 # AUTO_GHOST_ENABLED   — whether the background scheduler runs at all

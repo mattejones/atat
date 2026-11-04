@@ -180,6 +180,7 @@ Set in the instance `.env`:
 | `HEADING_RULE` | `full` | rule beside PDF section headings: `full`, `short` or `none` |
 | `HEADING_TRACKING` | `0.5` | heading letter-spacing in points; above ~0.6 ATS parsers read "P R O F I L E" |
 | `LINK_UNDERLINE` | `true` | underline links in the PDF |
+| `MAX_CV_PAGES` | `2` | warn (never block) when a rendered CV runs longer than this; `0` turns it off |
 | `AUTO_JUDGE` | `true` | run the judges as soon as a CV is generated |
 
 The CV header (name, email, phone, location, LinkedIn, website) is built from the library's
