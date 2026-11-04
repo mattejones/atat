@@ -90,8 +90,12 @@ def _strip_bold_labels(text: str) -> str:
 
 
 def _strip_inline_bold(text: str) -> str:
-    """Remove bold markdown from inline text: **word** -> word."""
-    return re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+    """Remove inline emphasis markers: **word** -> word and *word* -> word.
+
+    Library text is emitted into the PDF literally, so any marker the parser leaves behind prints.
+    """
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+    return re.sub(r'(?<![*\w])\*(?=\S)([^*\n]+?)(?<=\S)\*(?![*\w])', r'\1', text)
 
 
 def parse_cv(markdown: str) -> ParsedCV:
@@ -149,7 +153,7 @@ def parse_cv(markdown: str) -> ParsedCV:
     # ── Profile — every paragraph ──────────────────────────────────────────────
     # (Only a line that is just --- is a divider; a --- inside prose is left alone.)
     profile_raw = re.sub(r'(?m)^\s*---\s*$', '', sections.get('Profile', '')).strip()
-    profile = [p.strip() for p in re.split(r'\n\s*\n', profile_raw) if p.strip()]
+    profile = [_strip_inline_bold(p.strip()) for p in re.split(r'\n\s*\n', profile_raw) if p.strip()]
 
     # ── Experience ─────────────────────────────────────────────────────────────
     experience: list[ExperienceEntry] = []
@@ -195,7 +199,7 @@ def parse_cv(markdown: str) -> ParsedCV:
 
             # Italic context line
             if (re.match(r'^\*[^*].*[^*]\*$', s) or re.match(r'^\*[^*]+\*$', s)) and not context:
-                candidate = s.strip('*').strip()
+                candidate = _strip_inline_bold(s.strip('*').strip())
                 # Don't treat date-only italics as context
                 if not re.match(r'^[A-Z][a-z]{2}\s+\d{4}', candidate):
                     context = candidate
@@ -226,7 +230,8 @@ def parse_cv(markdown: str) -> ParsedCV:
         m = re.match(r'^\*{0,2}([^*:]+)\*{0,2}[:\s]+(.+)$', line)
         if m:
             cat = m.group(1).strip().rstrip(':').rstrip('*').strip()
-            items = _strip_inline_bold(m.group(2).strip())
+            items = re.sub(r'^\*+\s*', '', m.group(2).strip())   # closing ** of "**Category:**"
+            items = _strip_inline_bold(items)
             if cat and items:
                 skills.append((cat, items))
 

@@ -527,3 +527,62 @@ def test_the_paragraph_gap_is_a_setting(monkeypatch):
     monkeypatch.setattr(config, "PROFILE_PARAGRAPH_GAP", 14.0)
     cv = _rich_cv()
     assert "#v(14pt)" in build_typst_doc(cv)
+
+
+# ── No markdown leftovers may reach the PDF ────────────────────────────────────────────────
+# Typst used to swallow a stray "**" or "_" as markup. Library text is now emitted literally, so
+# anything the parser leaves behind prints.
+
+from pipeline.parse_cv import parse_cv  # noqa: E402
+
+
+@pytest.mark.parametrize("line", [
+    "**Tools:** Excel, Salesforce",
+    "**Tools**: Excel, Salesforce",
+    "Tools: Excel, Salesforce",
+])
+def test_skills_line_has_no_stray_asterisks(line):
+    md = "# A\na@b.com\n\n## Profile\n\nX.\n\n## Skills\n\n" + line + "\n"
+    assert parse_cv(md).skills == [("Tools", "Excel, Salesforce")]
+
+
+MD_EVERYWHERE = """# Jane Doe
+jane@example.com · Leeds, UK
+
+## Profile
+
+Led a **big** team and *kept* it calm.
+
+## Experience
+
+### Acme Care — Head of Ops | 2020 - Present
+*Ran the **whole** service for older adults.*
+- Cut spend by **a third** by redesigning the rota across all three sites.
+- Passed two inspections with *no* requirement notices in a single year.
+
+### Earlier experience
+Worked in **care** and *support* roles before 2020.
+
+## Skills
+
+**Operations and Leadership:** Leading **large** teams, rota design
+**Tools**: Excel, Salesforce
+
+## Education
+
+**BA Hons Psychology**
+Western University · 2008 - 2011
+*Psychology; Sociology*
+- Dean's list **2010**
+
+## Certifications
+
+- **First Aid** at work
+"""
+
+
+def test_no_markdown_markers_reach_the_pdf_text(tmp_path):
+    text = _pdf_text(build_typst_doc(parse_cv(MD_EVERYWHERE)), tmp_path)
+    assert "*" not in text, f"stray asterisk in the PDF text: {text!r}"
+    flat = " ".join(text.split())
+    assert "Operations and Leadership" in flat and "Leading large teams" in flat
