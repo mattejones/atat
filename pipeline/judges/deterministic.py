@@ -41,7 +41,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
-from pipeline.judges.context import STOPWORDS, JudgeContext, stem, tokens
+from pipeline.judges.context import STOPWORDS, JudgeContext, content_tokens, stem, tokens
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +54,7 @@ FLESCH_MIN_WORD_COUNT = 15     # paragraphs with fewer words skipped for Flesch
 MIN_BULLET_WORDS      = 8      # an experience bullet shorter than this reads as a fragment
 REPEAT_LIMIT          = 3      # a word used this often within one role's bullets is flagged
 AD_ECHO_NGRAM         = 4      # words in a phrase copied from the job ad
+AD_TERM_LIMIT         = 4      # an ad word used this often across the CV is flagged, even if the library has it
 
 
 # ── Hotword corpus ────────────────────────────────────────────────────────────
@@ -96,6 +97,7 @@ class DeterministicFlag:
     end_pos:   int
     excerpt:   str
     message:   str
+    severity:  str = "error"      # "advisory" flags are shown but do not fail the section
 
 
 @dataclass
@@ -245,7 +247,15 @@ def _without_names(prose: str) -> str:
     return " ".join(kept_sentences)
 
 
-def _readability_score(prose: str) -> float:
+def _without_terms(prose: str, terms) -> str:
+    """The prose with the person's own long vocabulary taken out (as _without_names does for names)."""
+    if not terms:
+        return prose
+    kept = [w for w in prose.split() if w.strip(".,;:!?\"'()").lower() not in terms]
+    return " ".join(kept)
+
+
+def _readability_score(prose: str, known=frozenset()) -> float:
     """
     Flesch Reading Ease, giving the benefit of the doubt to names and acronyms.
 
@@ -254,7 +264,10 @@ def _readability_score(prose: str) -> float:
     acronyms), so a paragraph is flagged only if it is hard to read under BOTH readings.
     """
     protected = _protect_dots(prose)
-    return max(_flesch_reading_ease(protected), _flesch_reading_ease(_without_names(protected)))
+    scores = [_flesch_reading_ease(protected), _flesch_reading_ease(_without_names(protected))]
+    if known:
+        scores.append(_flesch_reading_ease(_without_terms(protected, known)))
+    return max(scores)
 
 
 def _flesch_reading_ease(text: str) -> float:
@@ -274,8 +287,39 @@ def _flesch_reading_ease(text: str) -> float:
 
 # ── Individual checks ─────────────────────────────────────────────────────────
 
-def _check_hotwords(text: str) -> list[DeterministicFlag]:
-    """Flag all hotword occurrences with their character spans."""
+_BAN_CUE = re.compile(
+    r"\b(never use|do not use|don't use|must not use|should not use|avoid|banned?|forbidden|"
+    r"prohibited|not to use)\b", re.IGNORECASE)
+_QUOTED = re.compile(
+    r"[\"“`]([^\"”`\n]{2,40})[\"”`]|\*\*([^*\n]{2,40})\*\*|(?<![\w])'([^'\n]{2,40})'(?!\w)")
+
+
+def banned_terms(personal_additions: str) -> list:
+    """
+    Words and phrases the person's own rules forbid, read from their personal_additions.
+
+    A line counts as a ban when it carries a cue ("never use", "banned words:", "avoid" ...). The
+    terms are what it quotes ("genuine") or, after a colon, what it lists (a / b, a, b or c). A line
+    that only says what to write ("Always write "Registered Manager" in full") is not a ban.
+    """
+    terms: list = []
+    for line in (personal_additions or "").splitlines():
+        cue = _BAN_CUE.search(line)
+        if not cue:
+            continue
+        found = [next(g for g in m.groups() if g) for m in _QUOTED.finditer(line)]
+        if not found and ":" in line[cue.start():]:
+            tail = line.split(":", 1)[1]
+            found = [t.strip(" .*`\"'") for t in re.split(r"\s*(?:/|,|;|\bor\b)\s*", tail)]
+        for t in found:
+            t = t.strip()
+            if t and len(t.split()) <= 4 and t.lower() not in (x.lower() for x in terms):
+                terms.append(t)
+    return terms
+
+
+def _check_hotwords(text: str, extra: tuple = ()) -> list[DeterministicFlag]:
+    """Flag all hotword occurrences with their character spans. `extra` are the person's own bans."""
     flags: list[DeterministicFlag] = []
     for hotword, pattern in _HOTWORD_PATTERNS:
         for match in pattern.finditer(text):
@@ -285,6 +329,12 @@ def _check_hotwords(text: str) -> list[DeterministicFlag]:
                 end_pos=match.end(),
                 excerpt=match.group(),
                 message=f"Hotword detected: '{match.group()}' — remove or rephrase.",
+            ))
+    for term in extra:
+        for match in re.finditer(rf"\b{re.escape(term)}\b", text, re.IGNORECASE):
+            flags.append(DeterministicFlag(
+                type="hotword", start_pos=match.start(), end_pos=match.end(), excerpt=match.group(),
+                message=f"'{match.group()}' is on your own list of words not to use — rephrase.",
             ))
     return flags
 
@@ -372,7 +422,7 @@ def _check_sentence_length(text: str) -> list[DeterministicFlag]:
     return flags
 
 
-def _check_readability(text: str) -> tuple[float, Optional[DeterministicFlag]]:
+def _check_readability(text: str, known=frozenset()) -> tuple[float, Optional[DeterministicFlag]]:
     """
     Compute Flesch Reading Ease per prose paragraph.
 
@@ -395,7 +445,7 @@ def _check_readability(text: str) -> tuple[float, Optional[DeterministicFlag]]:
         if len(words) < FLESCH_MIN_WORD_COUNT:
             continue
 
-        score = _readability_score(prose)
+        score = _readability_score(prose, known)
         if score < worst_score:
             worst_score = score
             if score < FLESCH_MIN_SCORE:
@@ -441,6 +491,49 @@ def _check_profile_shape(text: str) -> list[DeterministicFlag]:
             message=f"Profile is {words} words; this instance expects {lo}-{hi}.",
         ))
     return flags
+
+
+_THIRD_PERSON = re.compile(r"\b(she|her|hers|he|him|his|they|their)\b", re.IGNORECASE)
+
+
+def _check_third_person(text: str) -> list[DeterministicFlag]:
+    """A profile speaks as the candidate ("Led teams ..."), not about them ("She leads teams ...")."""
+    return [
+        DeterministicFlag(
+            type="third_person", start_pos=m.start(), end_pos=m.end(), excerpt=m.group(),
+            message=(
+                f"'{m.group()}' is third person. Write the profile from the candidate's own "
+                "point of view, with the subject implied (\"Led teams ...\")."
+            ),
+        )
+        for m in _THIRD_PERSON.finditer(text)
+    ]
+
+
+_IRREGULAR_PARTICIPLES = (
+    "built|made|run|led|held|kept|set|taught|won|sent|done|given|known|seen|shown|taken|written|"
+    "chosen|driven|brought|bought|thought|found|met|paid|put|read|said|sold|spent|understood"
+)
+_PASSIVE = re.compile(
+    rf"\b(?:am|is|are|was|were|be|been|being)\s+(?:\w+ly\s+)?(\w{{3,}}ed|{_IRREGULAR_PARTICIPLES})\b",
+    re.IGNORECASE,
+)
+
+
+def _check_passive(text: str) -> list[DeterministicFlag]:
+    """Passive voice in the profile ("rotas were redesigned"). Advisory: it weakens a claim of
+    ownership, but is sometimes the right way to say something."""
+    return [
+        DeterministicFlag(
+            type="passive", start_pos=m.start(), end_pos=m.end(), excerpt=m.group(),
+            message=(
+                f"'{m.group()}' is passive voice. Say who did it (\"I redesigned the rotas\") "
+                "if it was you."
+            ),
+            severity="advisory",
+        )
+        for m in _PASSIVE.finditer(text)
+    ]
 
 
 def _non_stop(window: list) -> int:
@@ -499,6 +592,23 @@ def _check_ad_echo(text: str, ctx: JudgeContext) -> list[DeterministicFlag]:
                 message=(
                     f"'{text[start:end]}' comes from the job ad, not your library, and appears "
                     f"{counts[k]} times in this CV. Use it at most once, or remove it."
+                ),
+            ))
+
+    # 3. any ad word used AD_TERM_LIMIT+ times, even one the library also uses: a CV that says
+    #    "clinical" four times is echoing the ad's emphasis whether or not the person ever did
+    ad_stems = {stem(t[0]) for t in content_tokens(ctx.jd_text)}
+    for word, start, end in toks:
+        k = stem(word)
+        if k in seen or len(word) < 5 or word in STOPWORDS:
+            continue
+        if k in ad_stems and counts.get(k, 0) >= AD_TERM_LIMIT:
+            seen.add(k)
+            flags.append(DeterministicFlag(
+                type="ad_echo", start_pos=start, end_pos=end, excerpt=text[start:end],
+                message=(
+                    f"'{text[start:end]}' is a word from the job ad and appears {counts[k]} times "
+                    "in this CV. Vary it or cut some."
                 ),
             ))
     return flags
@@ -585,20 +695,25 @@ def run(text: str, ctx: Optional[JudgeContext] = None) -> DeterministicResult:
 
     flags: list[DeterministicFlag] = []
 
-    flags.extend(_check_hotwords(text))
+    flags.extend(_check_hotwords(text, tuple(banned_terms(ctx.personal_additions)) if ctx else ()))
     flags.extend(_check_em_dashes(text))
     flags.extend(_check_sentence_length(text))
 
     section = (ctx.section if ctx else "").lower()
     if section == "profile":
         flags.extend(_check_profile_shape(text))
+        import pipeline.config as _cfg
+        if _cfg.FLAG_THIRD_PERSON:
+            flags.extend(_check_third_person(text))
+        flags.extend(_check_passive(text))
     if section == "experience":
         flags.extend(_check_repetition(text))
         flags.extend(_check_bullet_fragments(text))
     if ctx is not None:
         flags.extend(_check_ad_echo(text, ctx))
 
-    flesch_score, readability_flag = _check_readability(text)
+    flesch_score, readability_flag = _check_readability(
+        text, ctx.known_long_words() if ctx else frozenset())
     if readability_flag:
         flags.append(readability_flag)
 
@@ -608,7 +723,7 @@ def run(text: str, ctx: Optional[JudgeContext] = None) -> DeterministicResult:
     )
 
     return DeterministicResult(
-        passed=len(flags) == 0,
+        passed=not any(f.severity != "advisory" for f in flags),
         flesch_score=flesch_score,
         flags=flags,
     )

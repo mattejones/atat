@@ -81,6 +81,14 @@ class JudgeContext:
             lambda: {stem(t[0]) for t in content_tokens(self.jd_text)} - self.known_stems(),
         )
 
+    def known_long_words(self, min_len: int = 8) -> frozenset:
+        """Long words the person's own materials use. They are the person's vocabulary, so a long
+        one is not evidence that the text is hard to read."""
+        return self._memo(
+            ("long_known", min_len),
+            lambda: frozenset(t[0] for t in tokens(self.known_text) if len(t[0]) >= min_len),
+        )
+
     def cv_stem_counts(self, fallback_text: str = "") -> dict:
         def build():
             counts: dict = {}

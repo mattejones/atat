@@ -272,3 +272,96 @@ def test_retry_hides_the_excerpt_for_profile_shape_flags():
         {"type": "fragment", "message": "Bullet is only 4 words", "excerpt": "Led the Leeds team."},
     ])
     assert "WHOLE PROFILE TEXT" not in block and "Led the Leeds team." in block
+
+
+# ── Batch 2 checks, verified against the brief ─────────────────────────────────
+
+BANS = (
+    "## Wording\n"
+    '- Never use the words "genuine" or "genuinely".\n'
+    "- Banned words: passionate / thrilled\n"
+    '- Always write "Registered Manager" in full, never "RM".\n'
+)
+
+
+def _hot(result) -> list:
+    return [f.excerpt.lower() for f in result.flags if f.type == "hotword"]
+
+
+def test_words_banned_in_the_personal_additions_are_flagged():
+    text = "A genuinely careful and passionate leader who is thrilled by the work and genuine."
+    hot = _hot(det.run(text, _ctx(section="profile", additions=BANS)))
+    assert {"genuinely", "genuine", "passionate", "thrilled"} <= set(hot)
+
+
+def test_a_banned_word_is_not_flagged_when_there_are_no_such_rules():
+    assert "genuine" not in _hot(det.run("A genuine leader.", _ctx(section="profile")))
+
+
+def test_an_instruction_that_only_names_wording_to_use_is_not_read_as_a_ban():
+    text = "The Registered Manager ran the service."
+    assert _hot(det.run(text, _ctx(section="profile", additions=BANS))) == []
+
+
+def test_third_person_pronouns_in_the_profile_are_flagged():
+    text = "She leads teams and her work shows it. They value his judgement and their results."
+    flags = [f for f in det.run(text, _ctx(section="profile")).flags if f.type == "third_person"]
+    assert {f.excerpt.lower() for f in flags} >= {"she", "her", "they", "his", "their"}
+
+
+def test_the_third_person_check_can_be_switched_off_per_instance(monkeypatch):
+    monkeypatch.setattr(config, "FLAG_THIRD_PERSON", False, raising=False)
+    assert "third_person" not in _types(det.run("She leads teams.", _ctx(section="profile")))
+
+
+def test_third_person_pronouns_are_only_checked_in_the_profile():
+    # in a role, "their" is about someone else ("coached managers to own their decisions")
+    text = "- Coached the managers to own their decisions across all three branches of the group.\n"
+    assert "third_person" not in _types(det.run(text, _ctx(section="experience")))
+
+
+def test_passive_voice_in_the_profile_is_advisory():
+    text = "Rotas were redesigned and the service was transformed by the team."
+    flags = [f for f in det.run(text, _ctx(section="profile")).flags if f.type == "passive"]
+    assert flags and all(getattr(f, "severity", "") == "advisory" for f in flags)
+
+
+def test_an_advisory_flag_alone_does_not_fail_the_section(monkeypatch):
+    from pipeline.judges.deterministic import DeterministicFlag
+    monkeypatch.setattr(det, "_check_passive", lambda t: [DeterministicFlag(
+        "passive", 0, 1, "x", "advisory", severity="advisory")], raising=False)
+    # a profile of the right shape, so nothing else fires
+    ok = " ".join(["Led teams of twelve across three branches and kept everyone safe."] * 1)
+    monkeypatch.setattr(config, "PROFILE_PARAGRAPHS", 1)
+    monkeypatch.setattr(config, "PROFILE_WORDS_MIN", 1)
+    monkeypatch.setattr(config, "PROFILE_WORDS_MAX", 200)
+    result = det.run(ok, _ctx(section="profile", jd=""))
+    assert [f.type for f in result.flags] == ["passive"] and result.passed
+
+
+def test_active_voice_is_not_flagged_as_passive():
+    text = "I redesigned the rotas and the team transformed the service."
+    assert "passive" not in _types(det.run(text, _ctx(section="profile")))
+
+
+def test_a_single_ad_word_used_four_times_is_flagged_even_if_the_library_uses_it():
+    library = LIBRARY + " Ran clinical governance for the branches."
+    four = "Clinical lead. Clinical audits. Clinical rotas. Clinical notes."
+    three = "Clinical lead. Clinical audits. Clinical rotas."
+    flags = [f for f in det.run("- Ran a clinical rota.\n", _ctx(library=library, cv_text=four)).flags
+             if f.type == "ad_echo"]
+    assert any("clinical" in f.message.lower() and "4 times" in f.message for f in flags)
+    flags = [f for f in det.run("- Ran a clinical rota.\n", _ctx(library=library, cv_text=three)).flags
+             if f.type == "ad_echo"]
+    assert not any("clinical" in f.message.lower() for f in flags)
+
+
+HEAVY = ("We ran pharmacovigilance, interdisciplinary neurodevelopmental multidisciplinary "
+         "rehabilitation programmes and kept every patient safe and well looked after by the team.")
+
+
+def test_words_the_library_uses_do_not_drag_readability_down():
+    lib = "pharmacovigilance interdisciplinary neurodevelopmental multidisciplinary rehabilitation"
+    assert det._flesch_reading_ease(det._protect_dots(HEAVY)) < det.FLESCH_MIN_SCORE
+    assert "readability" in _types(det.run(HEAVY))                                   # no context
+    assert "readability" not in _types(det.run(HEAVY, _ctx(section="profile", library=lib, jd="")))

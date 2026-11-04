@@ -122,6 +122,10 @@ try:
     PROFILE_PARAGRAPH_GAP = max(0.0, float(os.getenv("PROFILE_PARAGRAPH_GAP", "11")))
 except ValueError:
     PROFILE_PARAGRAPH_GAP = 11.0
+# FLAG_THIRD_PERSON — flag "she/her/he/his/they/their" in the profile. A CV profile is written from the
+#   candidate's own point of view with the subject implied ("Led teams..."), never "She leads teams".
+#   Set false for an instance that wants third-person profiles.
+FLAG_THIRD_PERSON = os.getenv("FLAG_THIRD_PERSON", "true").lower() == "true"
 # MAX_CV_PAGES — a rendered CV longer than this is flagged (a warning on the application, like the
 #   unreviewed-CV warning; nothing is cut or blocked). 0 turns the check off.
 try:

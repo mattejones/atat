@@ -181,6 +181,7 @@ Set in the instance `.env`:
 | `HEADING_TRACKING` | `0.5` | heading letter-spacing in points; above ~0.6 ATS parsers read "P R O F I L E" |
 | `LINK_UNDERLINE` | `true` | underline links in the PDF |
 | `MAX_CV_PAGES` | `2` | warn (never block) when a rendered CV runs longer than this; `0` turns it off |
+| `FLAG_THIRD_PERSON` | `true` | judge flags third-person pronouns in the profile |
 | `PROFILE_PARAGRAPH_GAP` | `11` | points between profile paragraphs |
 | `AUTO_JUDGE` | `true` | run the judges as soon as a CV is generated |
 

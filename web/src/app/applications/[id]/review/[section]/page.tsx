@@ -11,7 +11,8 @@ import { decodeEntities } from "@/lib/text";
 
 type FlagStatus = "active" | "dismissed" | "actioned";
 type FlagType   = "hotword" | "em_dash" | "sentence_length" | "readability" | "accuracy"
-                | "profile_shape" | "ad_echo" | "repetition" | "fragment";
+                | "profile_shape" | "ad_echo" | "repetition" | "fragment"
+                | "third_person" | "passive";
 
 interface Flag {
   id:               string;
@@ -69,6 +70,8 @@ const FLAG_STYLES: Record<FlagType, { bg: string; border: string; label: string;
   ad_echo:         { bg: "bg-rose-100",   border: "border-rose-300",   label: "Copied from ad",  pill: "bg-rose-200 text-rose-800"     },
   repetition:      { bg: "bg-lime-100",   border: "border-lime-300",   label: "Repetition",      pill: "bg-lime-200 text-lime-800"     },
   fragment:        { bg: "bg-sky-100",    border: "border-sky-300",    label: "Fragment",        pill: "bg-sky-200 text-sky-800"       },
+  third_person:    { bg: "bg-fuchsia-100", border: "border-fuchsia-300", label: "Third person",  pill: "bg-fuchsia-200 text-fuchsia-800" },
+  passive:         { bg: "bg-stone-100",  border: "border-stone-300",  label: "Passive (advice)", pill: "bg-stone-200 text-stone-800" },
 };
 
 const defaultStyle = { bg: "bg-gray-100", border: "border-gray-300", label: "Issue", pill: "bg-gray-200 text-gray-800" };
