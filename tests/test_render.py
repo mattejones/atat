@@ -330,3 +330,45 @@ def test_text_is_a_string_literal_so_no_character_needs_escaping():
     out = esc('~ * _ ` [ ] // /* = - + # $ < > @ \ " end')
     assert out.startswith('#"') and out.endswith('";')
     assert '\\"' in out and '\\' in out        # only the string's own quote and backslash are escaped
+
+
+# ── A role header must travel with its first bullet ─────────────────────────────────────────
+
+def _page_texts(doc: str, tmp_path) -> list:
+    pypdf = pytest.importorskip("pypdf")
+    _compile(doc, tmp_path)
+    return [p.extract_text() for p in pypdf.PdfReader(str(tmp_path / "cv.pdf")).pages]
+
+
+def _boundary_cv(filler_lines: int) -> ParsedCV:
+    return ParsedCV(
+        name="Jane Doe",
+        contact="jane@example.com",
+        profile=[f"Filler line {i}." for i in range(filler_lines)],
+        experience=[
+            ExperienceEntry("FirstCo", "Lead", "2020 - 2022", "", ["Opening bullet here."]),
+            ExperienceEntry("ZEBRACO", "Manager", "2018 - 2020", "A context line.",
+                            ["FIRSTBULLETMARK did a thing.", "Second bullet.", "Third bullet.",
+                             "Fourth bullet."]),
+        ],
+        skills=[("Ops", "Planning")],
+        education=[], certifications=[],
+    )
+
+
+def test_a_role_header_is_never_left_at_the_foot_of_a_page_without_its_first_bullet(tmp_path):
+    """Sweep the amount of text above the role so its header lands at every position near the
+    page break, including the last ~40pt of page 1. Wherever the company name is, the first bullet
+    must be on the same page."""
+    stranded, seen_break = [], False
+    for n in range(10, 60):
+        pages = _page_texts(build_typst_doc(_boundary_cv(n)), tmp_path)
+        co_page = next((i for i, t in enumerate(pages) if "ZEBRACO" in t), None)
+        bu_page = next((i for i, t in enumerate(pages) if "FIRSTBULLETMARK" in t), None)
+        assert co_page is not None and bu_page is not None
+        if co_page == 1:
+            seen_break = True
+        if co_page != bu_page:
+            stranded.append((n, co_page, bu_page))
+    assert seen_break, "sweep never pushed the role onto page 2, so it proved nothing"
+    assert not stranded, f"role header separated from its first bullet at: {stranded}"

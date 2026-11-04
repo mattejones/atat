@@ -253,19 +253,29 @@ def _render_exp(e: ExperienceEntry) -> str:
     else:
         out.append('#v(9pt)')
 
-    if e.bullets:
+    def _bullet_list(bs: list[str]) -> str:
         items = ',\n'.join(
             f'  [#par(leading:5.8pt)[#text(font:"Poppins",size:9pt,weight:"regular",'
             f'fill:rgb("{P["body"]}"))[{esc(b)}]]]'
-            for b in e.bullets
+            for b in bs
         )
-        out.append(
+        return (
             f'#list(\n'
             f'  marker:[{_bullet_marker(8)}],\n'
             f'  indent:0pt,spacing:5pt,body-indent:10pt,\n'
             f'{items}\n'
             f')'
         )
+
+    # The role header (title, context line) and the FIRST bullet are one unbreakable block, so a
+    # role is never left stranded at the foot of a page with its bullets on the next page. The
+    # remaining bullets flow and may break across pages normally.
+    if e.bullets:
+        out.append(_bullet_list(e.bullets[:1]))
+    out = ['#block(breakable: false)[\n' + '\n'.join(out) + '\n]']
+    if len(e.bullets) > 1:
+        out.append('#v(5pt)')
+        out.append(_bullet_list(e.bullets[1:]))
 
     out.append('#v(14pt)')
     return '\n'.join(out)
