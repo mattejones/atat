@@ -566,3 +566,61 @@ def test_a_weighted_file_without_a_parseable_title_is_warned_about(tmp_path, cap
     with caplog.at_level(logging.WARNING):
         assert wt.library_weights(d) == []
     assert "2020-now_x.md" in caplog.text and "title" in caplog.text.lower()
+
+
+# ── Common words must not be flagged as hotwords or repetition ─────────────────────────────
+
+def test_ban_terms_never_include_stopwords_punctuation_or_tiny_words():
+    additions = (
+        "Banned words: genuine, over, or, in, ,\n"
+        'Avoid the word "in" and "CVs" in headings, and "," too.\n'
+        "Don't use passionate, in, or thrilled.\n"
+    )
+    terms = [t.lower() for t in det.banned_terms(additions)]
+    assert "genuine" in terms and "passionate" in terms and "thrilled" in terms
+    for junk in ("in", "or", "over", ","):
+        assert junk not in terms
+
+
+def test_a_quoted_word_the_rule_says_to_use_instead_is_not_banned():
+    additions = 'Never use "customers" for the people we support, use "service users" instead.\n'
+    assert [t.lower() for t in det.banned_terms(additions)] == ["customers"]
+
+
+def test_a_prose_colon_line_is_not_split_into_ban_terms():
+    additions = ("Avoid anything that reads as filler: it should be short, and it should say what "
+                 "you did in plain words, or it should go.\n")
+    assert det.banned_terms(additions) == []
+
+
+def test_common_words_in_a_text_are_not_hotwords_when_rules_are_noisy():
+    additions = "Banned words: genuine, over, or, in, ,\n"
+    text = "Led customers in the north, over three years, or more."
+    assert _hot(det.run(text, _ctx(section="profile", additions=additions))) == []
+
+
+def _bullets(word: str, n: int) -> str:
+    sentences = [
+        "Resolved {w} complaints within two days using a new escalation route across the region.",
+        "Trained eight supervisors to coach {w} through difficult conversations without delay.",
+        "Redesigned the weekly rota so {w} always met a familiar face on arrival.",
+        "Negotiated a lower supplier price while protecting what {w} actually noticed.",
+        "Audited every incident log monthly and reported themes upwards to directors.",
+    ]
+    return "### Acme — Lead | 2020 - 2023\n" + "".join(
+        "- " + sentences[i].format(w=word) + "\n" for i in range(n))
+
+
+def test_a_generic_workplace_word_repeated_in_a_role_is_not_flagged():
+    for word in ("customers", "team", "service"):
+        assert "repetition" not in _types(det.run(_bullets(word, 3), _ctx(section="experience", jd="")))
+
+
+def test_a_word_the_persons_own_library_uses_a_lot_is_not_flagged_as_repetition():
+    lib = " ".join(["rehabilitation programmes"] * 8)
+    ctx = _ctx(section="experience", jd="", library=lib)
+    assert "repetition" not in _types(det.run(_bullets("rehabilitation", 3), ctx))
+
+
+def test_a_distinctive_word_repeated_is_still_flagged():
+    assert "repetition" in _types(det.run(_bullets("tribunal", 3), _ctx(section="experience", jd="")))

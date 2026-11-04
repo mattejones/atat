@@ -292,8 +292,19 @@ def _flesch_reading_ease(text: str) -> float:
 _BAN_CUE = re.compile(
     r"\b(never use|do not use|don't use|must not use|should not use|avoid|banned?|forbidden|"
     r"prohibited|not to use)\b", re.IGNORECASE)
-_QUOTED = re.compile(
-    r"[\"“`]([^\"”`\n]{2,40})[\"”`]|\*\*([^*\n]{2,40})\*\*|(?<![\w])'([^'\n]{2,40})'(?!\w)")
+_QUOTED = re.compile(r"[\"“`]([^\"”`\n]{2,40})[\"”`]|\*\*([^*\n]{2,40})\*\*")
+# After a banned term, wording that introduces what to use instead: later quotes are the WANTED words.
+_SWITCH = re.compile(r"\b(instead|rather than|always|prefer)\b|\b(?:use|say|write)\s+[\"“`]", re.IGNORECASE)
+_LEAD_FILLER = re.compile(r"^(?:the\s+)?(?:words?|terms?|phrases?)\s+", re.IGNORECASE)
+MAX_BAN_LIST_WORDS = 10      # a bare list of banned words is short; anything longer is a sentence
+
+
+def _usable_term(term: str) -> bool:
+    """A real word or phrase: not empty, not punctuation, not a stopword, not a tiny word."""
+    t = term.strip().lower()
+    if len(t) < 3 or not re.search(r"[a-z]{3}", t):
+        return False
+    return not all(w in STOPWORDS for w in re.findall(r"[a-z']+", t))
 
 
 def banned_terms(personal_additions: str) -> list:
@@ -301,22 +312,38 @@ def banned_terms(personal_additions: str) -> list:
     Words and phrases the person's own rules forbid, read from their personal_additions.
 
     A line counts as a ban when it carries a cue ("never use", "banned words:", "avoid" ...). The
-    terms are what it quotes ("genuine") or, after a colon, what it lists (a / b, a, b or c). A line
-    that only says what to write ("Always write "Registered Manager" in full") is not a ban.
+    terms are what it quotes ("genuine"), up to any "... instead" that introduces the wording to use
+    in its place, or else a short bare list after the cue (a / b, a, b or c). Stopwords, punctuation
+    and words under three letters are never terms, and a long sentence is never split into a list.
+    A line that only says what to write ("Always write "Registered Manager" in full") is not a ban.
     """
     terms: list = []
+
+    def add(t: str) -> None:
+        t = t.strip(" .*`\"'“”")
+        if t and _usable_term(t) and len(t.split()) <= 4 and t.lower() not in (x.lower() for x in terms):
+            terms.append(t)
+
     for line in (personal_additions or "").splitlines():
         cue = _BAN_CUE.search(line)
         if not cue:
             continue
-        found = [next(g for g in m.groups() if g) for m in _QUOTED.finditer(line)]
-        if not found and ":" in line[cue.start():]:
-            tail = line.split(":", 1)[1]
-            found = [t.strip(" .*`\"'") for t in re.split(r"\s*(?:/|,|;|\bor\b)\s*", tail)]
-        for t in found:
-            t = t.strip()
-            if t and len(t.split()) <= 4 and t.lower() not in (x.lower() for x in terms):
-                terms.append(t)
+        quotes = list(_QUOTED.finditer(line))
+        if quotes:
+            switch = _SWITCH.search(line, quotes[0].end())
+            limit = switch.start() if switch else len(line)
+            for m in quotes:
+                if m.start() < limit:
+                    add(next(g for g in m.groups() if g))
+            continue
+        tail = line[cue.end():]
+        if ":" in tail[:25]:
+            tail = tail.split(":", 1)[1]
+        tail = tail.strip().rstrip(".")
+        if not tail or len(tail.split()) > MAX_BAN_LIST_WORDS:
+            continue
+        for item in re.split(r"\s*(?:/|,|;|\bor\b|\band\b)\s*", tail):
+            add(_LEAD_FILLER.sub("", item.strip()))
     return terms
 
 
@@ -616,8 +643,31 @@ def _check_ad_echo(text: str, ctx: JudgeContext) -> list[DeterministicFlag]:
     return flags
 
 
-def _check_repetition(text: str) -> list[DeterministicFlag]:
-    """Flag a word used REPEAT_LIMIT times within one role's bullets (reset at each ### heading)."""
+# Everyday workplace words. A CV about people-facing work says "customers" or "team" often and
+# naturally, so repeating them is not a style problem.
+GENERIC_WORDS = frozenset("""
+team teams staff service services customer customers client clients people person business company
+work working works manager managers management project projects process processes system systems
+support care training report reports reporting plan plans quality performance development operation
+operations delivery region regional product products sales across group groups department
+organisation organization leadership lead led leading role roles year years month months week weekly
+""".split())
+
+
+def _rep_key(word: str) -> str:
+    return word.rstrip("s") if len(word) > 4 else word
+
+
+def _check_repetition(text: str, ctx: Optional[JudgeContext] = None) -> list[DeterministicFlag]:
+    """
+    Flag a word used REPEAT_LIMIT times within one role's bullets (reset at each ### heading).
+
+    Everyday workplace words (GENERIC_WORDS) and the person's own domain vocabulary (words their
+    library uses often) are exempt: repeating those is natural, not a tic.
+    """
+    exempt = {_rep_key(w) for w in GENERIC_WORDS}
+    if ctx is not None:
+        exempt |= ctx.frequent_known_keys(_rep_key)
     flags: list[DeterministicFlag] = []
     counts: dict = {}
     flagged: set = set()
@@ -635,7 +685,9 @@ def _check_repetition(text: str) -> list[DeterministicFlag]:
             shouting = len(word) == 3 and line[start:end].isupper()      # MVP, CQC, KPI
             if (len(word) < 4 and not shouting) or word in STOPWORDS or word.isdigit():
                 continue
-            key = word.rstrip("s") if len(word) > 4 else word
+            key = _rep_key(word)
+            if key in exempt:
+                continue
             counts[key] = counts.get(key, 0) + 1
             if counts[key] == REPEAT_LIMIT and key not in flagged:
                 flagged.add(key)
@@ -840,7 +892,7 @@ def run(text: str, ctx: Optional[JudgeContext] = None) -> DeterministicResult:
             flags.extend(_check_third_person(text))
         flags.extend(_check_passive(text))
     if section == "experience":
-        flags.extend(_check_repetition(text))
+        flags.extend(_check_repetition(text, ctx))
         flags.extend(_check_bullet_fragments(text))
         flags.extend(_check_context_echo(text))
         if ctx is not None:

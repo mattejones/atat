@@ -82,6 +82,17 @@ class JudgeContext:
             lambda: {stem(t[0]) for t in content_tokens(self.jd_text)} - self.known_stems(),
         )
 
+    def frequent_known_keys(self, key, min_count: int = 5) -> set:
+        """Words the person's own materials use often: their domain vocabulary. `key` normalises a
+        word (plurals); the result is the set of normalised words used `min_count`+ times."""
+        def build():
+            counts: dict = {}
+            for t in tokens(self.known_text):
+                if len(t[0]) >= 4 and t[0] not in STOPWORDS:
+                    counts[key(t[0])] = counts.get(key(t[0]), 0) + 1
+            return {k for k, n in counts.items() if n >= min_count}
+        return self._memo(("freq_known", min_count), build)
+
     def known_long_words(self, min_len: int = 8) -> frozenset:
         """Long words the person's own materials use. They are the person's vocabulary, so a long
         one is not evidence that the text is hard to read."""
