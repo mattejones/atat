@@ -222,7 +222,7 @@ def test_the_pdf_renders_education_honours():
         education=[EducationEntry("BA", "Uni", "2012", None, honours=["Dean's list", "Scholarship"])],
     )
     doc = build_typst_doc(cv)
-    assert "Dean's list" in doc and "Scholarship" in doc
+    assert "Dean’s list" in doc and "Scholarship" in doc          # text is a string literal, apostrophe curled
 
 
 # ── Sections ──────────────────────────────────────────────────────────────────
@@ -275,8 +275,8 @@ def test_link_underline_setting(monkeypatch):
 def test_contact_urls_display_short_but_link_to_the_full_address():
     assert _display_url("https://www.linkedin.com/in/jane-doe/") == "linkedin.com/in/jane-doe"
     line = _build_contact_line("https://www.linkedin.com/in/jane-doe/ · https://jane.example/")
-    assert '#link("https://www.linkedin.com/in/jane-doe/")[linkedin.com/in/jane-doe]' in line
-    assert '[jane.example]' in line
+    assert '#link("https://www.linkedin.com/in/jane-doe/")[#"linkedin.com/in/jane-doe";]' in line
+    assert '[#"jane.example";]' in line
 
 
 # ── Private library sections ──────────────────────────────────────────────────

@@ -67,20 +67,42 @@ def pdf_filename(name: str, company: str) -> str:
 
 # ── Typst escaping ─────────────────────────────────────────────────────────────
 
-def esc(t: str) -> str:
-    if not t:
-        return ""
-    for s, r in [
-        ('\\', '\\\\'), ('#', '\\#'), ('$', '\\$'),
-        ('"', '\\"'), ('<', '\\<'), ('>', '\\>'), ('@', '\\@'),
-    ]:
-        t = t.replace(s, r)
-    return t
-
-
 def esc_str(t: str) -> str:
     """Escape for Typst string literals (inside double quotes)."""
-    return t.replace('\\', '\\\\').replace('"', '\\"')
+    return (
+        t.replace('\\', '\\\\').replace('"', '\\"')
+         .replace('\r', '').replace('\n', '\\n').replace('\t', '\\t')
+    )
+
+
+def _typographic_apostrophes(t: str) -> str:
+    """
+    Curl single quotes and apostrophes, as Typst's markup mode used to do for us.
+
+    Library text is emitted as a string literal (see esc), which is not smart-quoted, so the
+    straight apostrophes in "Dean's list" would otherwise print straight.
+    """
+    t = re.sub(r"(?<=\w)'", "\u2019", t)                      # don't, Dean's, 2000's
+    t = re.sub(r"(?<![\w\u2019])'(?=\w)", "\u2018", t)        # 'quoted'
+    return t.replace("'", "\u2019")                            # a closing quote after punctuation
+
+
+def esc(t: str) -> str:
+    """
+    Library text as a Typst expression to drop into markup.
+
+    The text is emitted as a string literal, not escaped character by character, so nothing in
+    it can ever be read as markup. Escaping per character missed most of the language: "~400"
+    lost its tilde (a non-breaking space in markup), "*x*" and "_x_" turned bold and italic,
+    "//" started a comment that swallowed the rest of the bullet, a "[" or "]" unbalanced the
+    enclosing block, and "=", "-" or "+" at the start of a line became a heading or a list.
+
+    The trailing ";" ends the expression, so a following "(" or "[" in the template can never be
+    read as a call on the string. Typst consumes the ";" and prints nothing for it.
+    """
+    if not t:
+        return ""
+    return f'#"{esc_str(_typographic_apostrophes(t))}";'
 
 
 def esc_url(t: str) -> str:
@@ -88,15 +110,8 @@ def esc_url(t: str) -> str:
 
 
 def esc_display(t: str) -> str:
-    if not t:
-        return ""
-    for s, r in [
-        ('\\', '\\\\'), ('#', '\\#'), ('$', '\\$'),
-        ('"', '\\"'), ('<', '\\<'), ('>', '\\>'),
-    ]:
-        t = t.replace(s, r)
-    t = t.replace('@', '#"@"')
-    return t
+    """Contact-line text. Same as esc(): a string literal needs no special handling for '@'."""
+    return esc(t)
 
 
 # ── Contact line ───────────────────────────────────────────────────────────────

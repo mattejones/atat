@@ -274,3 +274,59 @@ def test_the_tracking_default_is_below_the_extraction_threshold():
     # Extractors insert a space once a gap passes ~10% of the font size (7.5pt -> 0.75pt).
     assert 0 <= config.HEADING_TRACKING <= 0.6
     assert "tracking:0.5pt" in build_typst_doc(_rich_cv())
+
+
+# ── Library text must never be read as Typst markup ───────────────────────────────────────────
+
+TRICKY = "~400 staff, *not* bold, _not_ italic, a // b, [x], = heading"
+
+
+def _tricky_cv() -> ParsedCV:
+    return ParsedCV(
+        name="Jane Doe",
+        contact="jane@example.com · Leeds, UK",
+        profile=[f"Profile: {TRICKY}", "- not a list item, + nor this one, 1. nor a number"],
+        experience=[ExperienceEntry(
+            company="Acme (the *big* one)", role="Head of #Ops", dates="Jan 2020 - Present",
+            context=f"Context: {TRICKY}",
+            bullets=[f"Bullet: {TRICKY}", "A bullet ending with a backtick ` and a $dollar and <tag> and @ref."],
+        )],
+        skills=[("Ops", f"Skills: {TRICKY}")],
+        education=[EducationEntry("BA (Hons) = Psychology", "Uni // Leeds", "2012", None,
+                                  honours=[f"Honour: {TRICKY}"])],
+        certifications=[f"Cert: {TRICKY}"],
+    )
+
+
+def _squash(s: str) -> str:
+    import re
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def test_markup_characters_in_library_text_come_through_unchanged(tmp_path):
+    text = _squash(_pdf_text(build_typst_doc(_tricky_cv()), tmp_path))
+    for label in ("Profile", "Context", "Bullet", "Skills", "Honour", "Cert"):
+        assert f"{label}: {TRICKY}" in text, f"{label} field was altered:\n{text[:600]}"
+    assert "BA (Hons) = Psychology" in text and "Uni // Leeds" in text
+    assert "Acme (the *big* one)" in text and "Head of #Ops" in text
+    assert "backtick ` and a $dollar and <tag> and @ref." in text
+
+
+def test_a_slash_comment_inside_a_bullet_no_longer_swallows_the_rest(tmp_path):
+    cv = _tricky_cv()
+    cv.experience[0].bullets = ["Led the Leeds team // then the York team, and kept both on budget."]
+    assert "then the York team, and kept both on budget." in _squash(_pdf_text(build_typst_doc(cv), tmp_path))
+
+
+def test_apostrophes_are_still_typographic():
+    from pipeline.render import esc
+    assert esc("Dean's list") == '#"Dean\u2019s list";'
+    assert esc("a 'quoted' word") == '#"a \u2018quoted\u2019 word";'
+    assert esc("") == ""
+
+
+def test_text_is_a_string_literal_so_no_character_needs_escaping():
+    from pipeline.render import esc
+    out = esc('~ * _ ` [ ] // /* = - + # $ < > @ \ " end')
+    assert out.startswith('#"') and out.endswith('";')
+    assert '\\"' in out and '\\' in out        # only the string's own quote and backslash are escaped
