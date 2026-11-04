@@ -156,16 +156,14 @@ def _parse_response(content_blocks: list) -> dict[str, str]:
     if not raw_text.strip():
         raise ValueError("Model returned no text content in response.")
 
-    # Strip markdown code fences if the model wrapped the JSON
-    cleaned = re.sub(r'^```(?:json)?\s*', '', raw_text.strip(), flags=re.IGNORECASE)
-    cleaned = re.sub(r'\s*```$', '', cleaned).strip()
+    from pipeline.llm_json import loads_lenient, strip_fences
 
     try:
-        data = json.loads(cleaned)
+        data = loads_lenient(raw_text)
     except json.JSONDecodeError as e:
         raise ValueError(
             f"Model returned invalid JSON: {e}\n"
-            f"First 400 chars: {cleaned[:400]}"
+            f"First 400 chars: {strip_fences(raw_text)[:400]}"
         )
 
     if not isinstance(data, list):
@@ -265,8 +263,9 @@ def generate_answers(
     try:
         system   = _build_system_prompt(qa_tone)
         user     = _build_user_message(jd_text, cv_markdown, notes, questions)
-        blocks   = _call_anthropic(system, user, include_search)
-        answers  = _parse_response(blocks)
+        from pipeline.llm_json import call_with_retry
+        # An empty or unparseable reply is retried once before the whole batch fails.
+        answers  = call_with_retry(lambda: _call_anthropic(system, user, include_search), _parse_response)
     except FileNotFoundError as e:
         raise RuntimeError(str(e))
     except ValueError as e:
@@ -350,12 +349,18 @@ def improve_answer(
     """Improve the applicant's own draft. Raises RuntimeError if the model returns nothing."""
     system, user = build_improve_prompt(
         question_text, response_length, draft, jd_text, cv_markdown, notes, qa_tone, instruction)
+    from pipeline.llm_json import call_with_retry
+
+    def parse(blocks) -> str:
+        text = "".join(getattr(b, "text", "") for b in blocks).strip()
+        text = re.sub(r"^[\"\u201c](.*)[\"\u201d]$", r"\1", text, flags=re.S).strip()   # a stray wrapping quote
+        if not text:
+            raise ValueError("The model returned an empty answer.")
+        return text
+
     try:
-        blocks = _call_anthropic(system, user, include_search=False)
+        return call_with_retry(lambda: _call_anthropic(system, user, include_search=False), parse)
+    except ValueError as e:
+        raise RuntimeError(str(e)) from e
     except Exception as e:                                  # noqa: BLE001
         raise RuntimeError(f"Improving the answer failed: {e}") from e
-    text = "".join(getattr(b, "text", "") for b in blocks).strip()
-    text = re.sub(r"^[\"\u201c](.*)[\"\u201d]$", r"\1", text, flags=re.S).strip()   # a stray wrapping quote
-    if not text:
-        raise RuntimeError("The model returned an empty answer.")
-    return text

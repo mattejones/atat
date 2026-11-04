@@ -372,10 +372,9 @@ def _log_extraction_failure(raw: str, error: str) -> Path:
 
 
 def _parse_response(raw: str) -> dict:
-    cleaned = re.sub(r'^```(?:json)?\s*', '', raw.strip(), flags=re.IGNORECASE)
-    cleaned = re.sub(r'\s*```$', '', cleaned).strip()
+    from pipeline.llm_json import loads_lenient
     try:
-        data = json.loads(cleaned)
+        data = loads_lenient(raw)
     except json.JSONDecodeError as e:
         log_path = _log_extraction_failure(raw, str(e))
         raise ValueError(

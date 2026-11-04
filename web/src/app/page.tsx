@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import ApplicationsTable from "@/components/ApplicationsTable";
+import FailedJobs from "@/components/FailedJobs";
 import Sheet from "@/components/ui/Sheet";
 import { STATUS_LABELS } from "@/lib/statuses";
 
@@ -241,6 +242,9 @@ export default function HomePage() {
             </Link>
           </div>
         </div>
+
+        {/* Work that failed partway: shown with a way to try again, never silently dropped */}
+        <FailedJobs />
 
         {/* Content */}
         {loading ? (

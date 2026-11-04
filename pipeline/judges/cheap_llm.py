@@ -129,13 +129,12 @@ def _call_openai(system: str, user_message: str) -> tuple[str, int, int]:
 # ── Response parser ───────────────────────────────────────────────────────────
 
 def _parse_response(raw: str) -> list[dict]:
-    cleaned = re.sub(r'^```(?:json)?\s*', '', raw.strip(), flags=re.IGNORECASE)
-    cleaned = re.sub(r'\s*```$', '', cleaned).strip()
+    from pipeline.llm_json import loads_lenient, strip_fences
 
     try:
-        data = json.loads(cleaned)
+        data = loads_lenient(raw)
     except json.JSONDecodeError as e:
-        raise ValueError(f"Judge returned invalid JSON: {e}\nRaw: {cleaned[:300]}")
+        raise ValueError(f"Judge returned invalid JSON: {e}\nRaw: {strip_fences(raw)[:300]}")
 
     if not isinstance(data, dict) or "flags" not in data:
         raise ValueError(f"Unexpected judge response shape: {cleaned[:300]}")

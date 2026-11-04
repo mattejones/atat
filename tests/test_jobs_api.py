@@ -107,3 +107,51 @@ def test_legacy_generative_endpoints_return_a_job():
 
     res = client.post(f"/review/no-such-report/evaluate")
     assert res.status_code == 404
+
+
+# ── Failed jobs that need attention ───────────────────────────────────────────────────────
+
+def _fail(job_id: str, error: str = "JobError: LLM generation failed: Model returned invalid JSON"):
+    import db.database
+    with db.database.get_connection() as conn:
+        conn.execute("UPDATE generation_jobs SET status = 'failed', error = ?, finished_at = datetime('now') WHERE id = ?",
+                     (error, job_id))
+
+
+def test_a_failed_job_is_listed_as_needing_attention_with_its_error():
+    app_uuid = _make_app(company="Eucalyptus")
+    job = client.post("/jobs", json={"kind": "_fake", "app_uuid": app_uuid, "draft": True}).json()
+    _fail(job["job_id"])
+    rows = client.get("/jobs/attention").json()
+    assert [r["job_id"] for r in rows] == [job["job_id"]]
+    assert rows[0]["company"] == "Eucalyptus" and "invalid JSON" in rows[0]["error"]
+
+
+def test_a_job_that_was_retried_successfully_is_no_longer_listed():
+    app_uuid = _make_app(company="Eucalyptus")
+    first = client.post("/jobs", json={"kind": "_fake", "app_uuid": app_uuid, "draft": True}).json()
+    _fail(first["job_id"])
+    retry = client.post(f"/jobs/{first['job_id']}/retry")
+    assert retry.status_code == 202
+    _wait(retry.json()["job_id"])
+    assert client.get("/jobs/attention").json() == []
+
+
+def test_a_still_failing_retry_keeps_one_row_not_two():
+    app_uuid = _make_app(company="Eucalyptus")
+    first = client.post("/jobs", json={"kind": "_fake", "app_uuid": app_uuid, "draft": True}).json()
+    second = client.post("/jobs", json={"kind": "_fake", "app_uuid": app_uuid, "draft": True}).json()
+    _fail(first["job_id"])
+    _fail(second["job_id"])
+    assert len(client.get("/jobs/attention").json()) == 1
+
+
+def test_old_failures_are_not_listed():
+    import db.database
+    app_uuid = _make_app()
+    job = client.post("/jobs", json={"kind": "_fake", "app_uuid": app_uuid, "draft": True}).json()
+    _fail(job["job_id"])
+    with db.database.get_connection() as conn:
+        conn.execute("UPDATE generation_jobs SET created_at = datetime('now', '-10 days'), "
+                     "finished_at = datetime('now', '-10 days') WHERE id = ?", (job["job_id"],))
+    assert client.get("/jobs/attention").json() == []

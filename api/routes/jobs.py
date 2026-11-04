@@ -71,6 +71,12 @@ def list_jobs(
     return call(service.list_jobs, status=status, app_uuid=app_uuid, kind=kind, limit=limit)
 
 
+@router.get("/attention")
+def jobs_needing_attention(days: int = 3):
+    """Recent failed jobs nobody has retried successfully: the failures a person should see."""
+    return call(service.needs_attention, days=days)
+
+
 @router.get("/kinds")
 def list_kinds():
     return service.describe_kinds()

@@ -349,6 +349,52 @@ def get(job_id: str, include_prompt: bool = False) -> dict:
     return _view(job, include_prompt=include_prompt)
 
 
+def needs_attention(days: int = 3) -> list[dict]:
+    """
+    Recent failed jobs nobody has dealt with, newest first, one per piece of work.
+
+    A failure is dealt with when a newer job for the same work (same kind and application, or the
+    same kind and request when it never got as far as an application) is running or has succeeded.
+    A failure that is retried and fails again appears once, as its newest attempt. Shows the error
+    so a person can see what went wrong, and the job id so they can retry it.
+    """
+    with get_connection() as db:
+        rows = db.execute(
+            """SELECT j.id, j.kind, j.status, j.application_id, j.params, j.error, j.created_at,
+                      j.finished_at, a.uuid AS app_uuid, a.company, a.role
+               FROM generation_jobs j LEFT JOIN applications a ON a.id = j.application_id
+               WHERE j.status IN ('failed', 'queued', 'running', 'succeeded')
+                 AND j.created_at >= datetime('now', ?)
+               ORDER BY j.created_at DESC""",
+            (f"-{int(days)} days",),
+        ).fetchall()
+
+    def key(r) -> tuple:
+        return (r["kind"], r["application_id"] or r["params"] or "")
+
+    seen: set = set()                     # work already answered by a newer non-failed job, or listed
+    out: list[dict] = []
+    for r in rows:                        # newest first
+        k = key(r)
+        if r["status"] != "failed":
+            seen.add(k)
+            continue
+        if k in seen:
+            continue
+        seen.add(k)
+        params = json.loads(r["params"] or "{}")
+        out.append({
+            "job_id":      r["id"],
+            "kind":        r["kind"],
+            "app_uuid":    r["app_uuid"],
+            "company":     r["company"] or params.get("company"),
+            "role":        r["role"] or params.get("role"),
+            "error":       r["error"] or "",
+            "finished_at": r["finished_at"],
+        })
+    return out
+
+
 def list_jobs(
     status:   Optional[str] = None,
     app_uuid: Optional[str] = None,

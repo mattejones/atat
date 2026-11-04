@@ -237,12 +237,10 @@ def _log_generation_failure(raw: str, error: str) -> Path:
 
 
 def parse_llm_response(raw: str) -> dict:
-    cleaned = re.sub(r'^```(?:json)?\s*', '', raw.strip(), flags=re.IGNORECASE)
-    cleaned = re.sub(r'\s*```$', '', cleaned)
-    cleaned = cleaned.strip()
+    from pipeline.llm_json import loads_lenient
 
     try:
-        data = json.loads(cleaned)
+        data = loads_lenient(raw)
     except json.JSONDecodeError as e:
         log_path = _log_generation_failure(raw, str(e))
         raise ValueError(
@@ -275,13 +273,16 @@ def call_llm(system: str, user: str) -> dict:
         raise ValueError(problems[0])
 
     if LLM_PROVIDER == "anthropic":
-        raw = _call_anthropic(system, user)
+        call = lambda: _call_anthropic(system, user)          # noqa: E731
     elif LLM_PROVIDER == "openai":
-        raw = _call_openai(system, user)
+        call = lambda: _call_openai(system, user)             # noqa: E731
     else:
         raise ValueError(f"Unknown LLM_PROVIDER: {LLM_PROVIDER!r}")
+    # An unusable reply (bad JSON, empty) is retried once: a generation is minutes of work.
+    from pipeline.llm_json import call_with_retry
+    data = call_with_retry(call, parse_llm_response)
     # The header (name and contact) comes from META, never from the model.
-    return apply_meta_header(parse_llm_response(raw), meta)
+    return apply_meta_header(data, meta)
 
 
 def _stream_message(client, **kwargs):
