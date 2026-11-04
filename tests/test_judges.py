@@ -365,3 +365,65 @@ def test_words_the_library_uses_do_not_drag_readability_down():
     assert det._flesch_reading_ease(det._protect_dots(HEAVY)) < det.FLESCH_MIN_SCORE
     assert "readability" in _types(det.run(HEAVY))                                   # no context
     assert "readability" not in _types(det.run(HEAVY, _ctx(section="profile", library=lib, jd="")))
+
+
+# ── A bullet that restates its own role's context line ─────────────────────────────────────
+
+CTX_ROLE_A = (
+    "### Acme Care — Registered Manager | 2019 - 2023\n"
+    "*Ran a twelve-bed residential home for older adults with dementia, managing rotas and safeguarding.*\n"
+)
+CTX_ROLE_B = (
+    "### Beta Homes — Deputy Manager | 2016 - 2019\n"
+    "*Supported the registered manager across three branches in the north of England during growth.*\n"
+)
+
+
+def _ce(result) -> list:
+    return [f for f in result.flags if f.type == "context_echo"]
+
+
+def test_a_bullet_that_restates_its_context_line_is_flagged_once():
+    text = (
+        CTX_ROLE_A
+        + "- Ran a residential home for twelve older adults with dementia, managing rotas and safeguarding.\n"
+        + "- Cut agency spend by a third by redesigning the rota and recruiting two permanent night staff.\n"
+        + "\n" + CTX_ROLE_B
+        + "- Trained eight new team leaders to run handovers without escalating every decision upwards.\n"
+    )
+    flags = _ce(det.run(text, _ctx(section="experience", jd="")))
+    assert len(flags) == 1
+    assert "residential home for twelve" in flags[0].excerpt
+    assert text[flags[0].start_pos:flags[0].end_pos].startswith("- Ran a residential home")
+
+
+def test_a_context_phrase_repeated_across_roles_is_flagged_once():
+    shared = "leading a team of twelve across three branches in the north"
+    text = (
+        "### Acme Care — Manager | 2019 - 2023\n"
+        f"*Registered manager {shared}, with full budget responsibility.*\n"
+        "- Cut agency spend by a third by redesigning the rota and recruiting two night staff.\n"
+        "\n### Beta Homes — Deputy | 2016 - 2019\n"
+        f"*Deputy to the director, {shared}, during a period of fast growth.*\n"
+        "- Trained eight new team leaders to run handovers without escalating decisions upwards.\n"
+    )
+    flags = _ce(det.run(text, _ctx(section="experience", jd="")))
+    assert len(flags) == 1
+    assert "team of twelve across three branches" in flags[0].message.lower() or \
+           "team of twelve across three branches" in flags[0].excerpt.lower()
+
+
+def test_distinct_contexts_and_bullets_raise_no_context_echo():
+    text = (
+        CTX_ROLE_A
+        + "- Cut agency spend by a third by redesigning the rota and recruiting two permanent night staff.\n"
+        + "- Passed two unannounced inspections with no requirement notices in the same year.\n"
+        + "\n" + CTX_ROLE_B
+        + "- Trained eight new team leaders to run handovers without escalating every decision upwards.\n"
+    )
+    assert _ce(det.run(text, _ctx(section="experience", jd=""))) == []
+
+
+def test_context_echo_only_applies_to_the_experience_section():
+    text = CTX_ROLE_A + "- Ran a residential home for twelve older adults with dementia, managing rotas.\n"
+    assert _ce(det.run(text, _ctx(section="profile", jd=""))) == []

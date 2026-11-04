@@ -54,6 +54,8 @@ FLESCH_MIN_WORD_COUNT = 15     # paragraphs with fewer words skipped for Flesch
 MIN_BULLET_WORDS      = 8      # an experience bullet shorter than this reads as a fragment
 REPEAT_LIMIT          = 3      # a word used this often within one role's bullets is flagged
 AD_ECHO_NGRAM         = 4      # words in a phrase copied from the job ad
+CONTEXT_ECHO_JACCARD  = 0.6    # a bullet this similar (shared content words) to its role's context line restates it
+CONTEXT_PHRASE_WORDS  = 6      # a run of this many words repeated in two roles' context lines is flagged
 AD_TERM_LIMIT         = 4      # an ad word used this often across the CV is flagged, even if the library has it
 
 
@@ -648,6 +650,97 @@ def _check_repetition(text: str) -> list[DeterministicFlag]:
     return flags
 
 
+_ITALIC_LINE = re.compile(r"^\*[^*].*[^*]\*$|^\*[^*]+\*$")
+
+
+def _roles(text: str) -> list:
+    """
+    The experience section as a list of roles: {"context": (text, start, end) | None,
+    "bullets": [(text, start, end), ...]}, each position the character span of its line in `text`.
+    A role starts at a "### " heading; its context is the first italic line under it.
+    """
+    roles: list = []
+    cursor = 0
+    for line in text.split("\n"):
+        start, end = cursor, cursor + len(line)
+        cursor = end + 1
+        s = line.strip()
+        if re.match(r"^###\s", s):
+            roles.append({"context": None, "bullets": []})
+        elif not roles or not s:
+            continue
+        elif _is_bullet_line(s):
+            roles[-1]["bullets"].append((_strip_markdown(re.sub(r"^\s*[-*+]\s+", "", s)), start, end))
+        elif roles[-1]["context"] is None and _ITALIC_LINE.match(s) and not roles[-1]["bullets"]:
+            roles[-1]["context"] = (s.strip("*").strip(), start, end)
+    return roles
+
+
+def _content_stems(text: str) -> set:
+    return {stem(w) for w, _, _ in tokens(text) if len(w) >= 4 and w not in STOPWORDS}
+
+
+def _check_context_echo(text: str) -> list[DeterministicFlag]:
+    """
+    Flag wording that is said twice.
+
+      1. a bullet that restates its own role's context line (content-word overlap above
+         CONTEXT_ECHO_JACCARD): the context line already said it, so the bullet adds nothing;
+      2. a phrase of CONTEXT_PHRASE_WORDS+ words that appears in the context lines of two
+         different roles (the same sentence reused to describe different jobs).
+    """
+    roles = _roles(text)
+    flags: list[DeterministicFlag] = []
+
+    for role in roles:
+        if not role["context"]:
+            continue
+        ctx_stems = _content_stems(role["context"][0])
+        if len(ctx_stems) < 3:
+            continue
+        for bullet, start, end in role["bullets"]:
+            b_stems = _content_stems(bullet)
+            shared = ctx_stems & b_stems
+            union = ctx_stems | b_stems
+            if len(shared) >= 3 and len(shared) / len(union) > CONTEXT_ECHO_JACCARD:
+                flags.append(DeterministicFlag(
+                    type="context_echo", start_pos=start, end_pos=end, excerpt=bullet[:120],
+                    message=(
+                        "This bullet restates the role's context line above it. Say something the "
+                        "context line does not (what you did, and what changed), or remove it."
+                    ),
+                ))
+
+    n = CONTEXT_PHRASE_WORDS
+    seen: dict = {}                         # n-gram -> index of the first role whose context has it
+    for i, role in enumerate(roles):
+        if not role["context"]:
+            continue
+        ctext, cstart, cend = role["context"]
+        toks = tokens(ctext)
+        hits: list = []
+        for k in range(len(toks) - n + 1):
+            gram = tuple(t[0] for t in toks[k:k + n])
+            if gram in seen and seen[gram] != i:
+                span = [toks[k][1], toks[k + n - 1][2]]
+                if hits and span[0] <= hits[-1][1]:
+                    hits[-1][1] = max(hits[-1][1], span[1])
+                else:
+                    hits.append(span)
+        for k in range(len(toks) - n + 1):
+            seen.setdefault(tuple(t[0] for t in toks[k:k + n]), i)
+        for a, b in hits:
+            phrase = ctext[a:b]
+            flags.append(DeterministicFlag(
+                type="context_echo", start_pos=cstart, end_pos=cend, excerpt=phrase,
+                message=(
+                    f"'{phrase}' is also in another role's context line. Describe each role in its "
+                    "own words."
+                ),
+            ))
+    return flags
+
+
 def _check_bullet_fragments(text: str) -> list[DeterministicFlag]:
     """Flag experience bullets too short to be a sentence (a length fix that left a stump)."""
     flags: list[DeterministicFlag] = []
@@ -709,6 +802,7 @@ def run(text: str, ctx: Optional[JudgeContext] = None) -> DeterministicResult:
     if section == "experience":
         flags.extend(_check_repetition(text))
         flags.extend(_check_bullet_fragments(text))
+        flags.extend(_check_context_echo(text))
     if ctx is not None:
         flags.extend(_check_ad_echo(text, ctx))
 
