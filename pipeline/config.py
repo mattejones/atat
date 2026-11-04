@@ -102,11 +102,19 @@ RENDER_PDF = os.getenv("RENDER_PDF", "true").lower() == "true"
 AUTO_JUDGE = os.getenv("AUTO_JUDGE", "true").lower() == "true"
 # HEADING_RULE  — the rule beside each section heading in the PDF: none | short | full.
 #   "full" (a line across the page, beside the title) is the original look.
+# HEADING_TRACKING — letter-spacing of the section headings, in points. Keep it at or below about
+#   0.5: wider than roughly 10% of the heading's font size (0.75pt at 7.5pt) and PDF text extraction
+#   reads "P R O F I L E" instead of "PROFILE", so an ATS parser looking for "Profile", "Experience",
+#   "Skills" never finds them. A person can't see the difference; the parser can. 0 turns spacing off.
 # LINK_UNDERLINE — underline links in the PDF (colour always marks them).
 HEADING_RULE   = os.getenv("HEADING_RULE", "full").strip().lower()
 if HEADING_RULE not in ("none", "short", "full"):
     HEADING_RULE = "full"
 LINK_UNDERLINE = os.getenv("LINK_UNDERLINE", "true").lower() == "true"
+try:
+    HEADING_TRACKING = max(0.0, float(os.getenv("HEADING_TRACKING", "0.5")))
+except ValueError:
+    HEADING_TRACKING = 0.5
 
 # ── Scheduler / auto-ghost ────────────────────────────────────────────────────
 # AUTO_GHOST_ENABLED   — whether the background scheduler runs at all

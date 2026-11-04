@@ -229,3 +229,48 @@ def test_two_paragraph_profile_compiles_and_shows_both(tmp_path):
     doc = build_typst_doc(_rich_cv())
     assert doc.count("#par(leading:6.5pt)") == 2
     assert _compile(doc, tmp_path) > 0
+
+
+# ── ATS readability: section headings must extract as whole words ───────────────────────────
+
+SECTION_WORDS = ("PROFILE", "EXPERIENCE", "SKILLS", "EDUCATION", "CERTIFICATIONS")
+
+
+def _pdf_text(doc: str, tmp_path) -> str:
+    """Render a Typst document and extract its text the way an ATS parser would."""
+    pypdf = pytest.importorskip("pypdf")
+    _compile(doc, tmp_path)
+    reader = pypdf.PdfReader(str(tmp_path / "cv.pdf"))
+    return "\n".join(page.extract_text() for page in reader.pages)
+
+
+def _missing_sections(text: str) -> list:
+    import re
+    return [w for w in SECTION_WORDS if not re.search(rf"\b{w}\b", text, re.IGNORECASE)]
+
+
+def test_default_headings_extract_as_whole_words(tmp_path):
+    text = _pdf_text(build_typst_doc(_rich_cv()), tmp_path)
+    assert _missing_sections(text) == [], f"headings did not extract cleanly:\n{text[:400]}"
+
+
+@pytest.mark.parametrize("rule", ["full", "short", "none"])
+def test_headings_extract_whatever_the_rule_style(tmp_path, monkeypatch, rule):
+    import pipeline.config as config
+    monkeypatch.setattr(config, "HEADING_RULE", rule)
+    assert _missing_sections(_pdf_text(build_typst_doc(_rich_cv()), tmp_path)) == []
+
+
+def test_wide_tracking_breaks_extraction_which_is_why_the_default_is_small(tmp_path, monkeypatch):
+    # The control: the same CV with the old 1.8pt spacing reads "P R O F I L E" to a parser.
+    import pipeline.config as config
+    monkeypatch.setattr(config, "HEADING_TRACKING", 1.8)
+    text = _pdf_text(build_typst_doc(_rich_cv()), tmp_path)
+    assert _missing_sections(text), "wide tracking was expected to break extraction"
+
+
+def test_the_tracking_default_is_below_the_extraction_threshold():
+    import pipeline.config as config
+    # Extractors insert a space once a gap passes ~10% of the font size (7.5pt -> 0.75pt).
+    assert 0 <= config.HEADING_TRACKING <= 0.6
+    assert "tracking:0.5pt" in build_typst_doc(_rich_cv())

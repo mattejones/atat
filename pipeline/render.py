@@ -166,7 +166,7 @@ def _sh(title: str) -> str:
     import pipeline.config as cfg
     label = (
         f'#text(font:"Poppins",size:7.5pt,weight:"semibold",'
-        f'fill:rgb("{P["accent"]}"),tracking:1.8pt)[#upper("{title}")]'
+        f'fill:rgb("{P["accent"]}"),tracking:{cfg.HEADING_TRACKING:g}pt)[#upper("{title}")]'
     )
     if cfg.HEADING_RULE == "none":
         return f'#block(above: 0pt, below: 8pt)[{label}]'

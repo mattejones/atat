@@ -178,6 +178,7 @@ Set in the instance `.env`:
 | `PROFILE_PARAGRAPHS`, `PROFILE_WORDS_MIN`, `PROFILE_WORDS_MAX` | 2, 80, 120 | profile shape; written into the prompt and checked by the judge |
 | `EARLIER_EXPERIENCE_HEADING` | `Earlier experience` | heading over the compressed earlier roles |
 | `HEADING_RULE` | `full` | rule beside PDF section headings: `full`, `short` or `none` |
+| `HEADING_TRACKING` | `0.5` | heading letter-spacing in points; above ~0.6 ATS parsers read "P R O F I L E" |
 | `LINK_UNDERLINE` | `true` | underline links in the PDF |
 | `AUTO_JUDGE` | `true` | run the judges as soon as a CV is generated |
 
