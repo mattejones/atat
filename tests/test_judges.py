@@ -427,3 +427,89 @@ def test_distinct_contexts_and_bullets_raise_no_context_echo():
 def test_context_echo_only_applies_to_the_experience_section():
     text = CTX_ROLE_A + "- Ran a residential home for twelve older adults with dementia, managing rotas.\n"
     assert _ce(det.run(text, _ctx(section="profile", jd=""))) == []
+
+
+# ── Per-role bullet weighting ("CV weight" header in the experience file) ──────────────────
+
+from pipeline import weights as wt  # noqa: E402
+
+
+def test_the_weight_header_is_parsed_and_unknown_values_are_ignored():
+    assert wt.parse_weight("# Experience: A - B\n**CV weight:** lead\n") == "lead"
+    assert wt.parse_weight("**CV weight:** Brief") == "brief"
+    assert wt.parse_weight("**CV weight:** huge") is None
+    assert wt.parse_weight("no header here") is None
+
+
+def test_each_weight_maps_to_its_bullet_bounds():
+    assert wt.BOUNDS == {"lead": (4, 6), "standard": (2, 4), "brief": (0, 1)}
+
+
+def _library(tmp_path):
+    d = tmp_path / "experience"
+    d.mkdir(exist_ok=True)
+    (d / "2020-now_acme-care_registered-manager.md").write_text(
+        "# Experience: Acme Care — Registered Manager\n**CV weight:** lead\n", encoding="utf-8")
+    (d / "2016-2019_beta-homes_deputy.md").write_text(
+        "# Experience: Beta Homes — Deputy Manager\n**CV weight:** brief\n", encoding="utf-8")
+    (d / "2010-2015_gamma_carer.md").write_text(
+        "# Experience: Gamma — Carer\nno weight\n", encoding="utf-8")
+    return d
+
+
+def test_library_weights_read_only_the_files_that_have_one(tmp_path):
+    ws = wt.library_weights(_library(tmp_path))
+    assert {(w["company"], w["weight"]) for w in ws} == {("Acme Care", "lead"), ("Beta Homes", "brief")}
+
+
+def test_the_prompt_block_states_counts_and_is_empty_without_weights(tmp_path):
+    block = wt.describe(wt.library_weights(_library(tmp_path)))
+    assert "Acme Care — Registered Manager: 4 to 6 bullets" in block
+    assert "Beta Homes — Deputy Manager: at most 1 bullet" in block
+    assert wt.describe([]) == ""
+
+
+def _weights(tmp_path):
+    return wt.library_weights(_library(tmp_path))
+
+
+def _roles_text(a: int, b: int, c: int) -> str:
+    def bl(n):
+        return "".join(f"- Bullet number {i} describing a distinct piece of real work done here.\n" for i in range(n))
+    return (f"### Acme Care — Registered Manager | 2020 - Present\n{bl(a)}\n"
+            f"### Beta Homes — Deputy Manager | 2016 - 2019\n{bl(b)}\n"
+            f"### Gamma — Carer | 2010 - 2015\n{bl(c)}")
+
+
+def _bc(result) -> list:
+    return [f for f in result.flags if f.type == "bullet_count"]
+
+
+def test_roles_inside_their_bounds_raise_no_bullet_count_flag(tmp_path):
+    ctx = _ctx(section="experience", jd="")
+    ctx.role_weights = _weights(tmp_path)
+    assert _bc(det.run(_roles_text(5, 1, 9), ctx)) == []        # Gamma has no weight: any count
+
+
+def test_too_few_and_too_many_bullets_are_flagged_per_role(tmp_path):
+    ctx = _ctx(section="experience", jd="")
+    ctx.role_weights = _weights(tmp_path)
+    text = _roles_text(2, 3, 1)
+    flags = _bc(det.run(text, ctx))
+    assert len(flags) == 2
+    assert "Acme Care has 2 bullets" in flags[0].message and "4-6" in flags[0].message
+    assert "Beta Homes has 3 bullets" in flags[1].message and "0-1" in flags[1].message
+    assert text[flags[0].start_pos:flags[0].end_pos].startswith("### Acme Care")
+
+
+def test_without_weights_nothing_changes(tmp_path):
+    assert _bc(det.run(_roles_text(1, 9, 0), _ctx(section="experience", jd=""))) == []
+
+
+def test_generation_prompt_carries_the_bullet_counts_only_when_weights_exist(tmp_path, monkeypatch):
+    import pipeline.tailorer as tailorer
+    weighted = _weights(tmp_path)
+    monkeypatch.setattr(wt, "library_weights", lambda *a, **k: weighted)
+    assert "BULLETS PER ROLE" in tailorer._bullets_block()
+    monkeypatch.setattr(wt, "library_weights", lambda *a, **k: [])
+    assert tailorer._bullets_block() == ""

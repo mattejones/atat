@@ -102,6 +102,13 @@ def load_experience_files() -> str:
     return "\n\n---\n\n".join(load_text(f) for f in files)
 
 
+def _bullets_block() -> str:
+    """Per-role bullet counts from the library's "CV weight" headers; empty when none are set."""
+    from pipeline import weights
+    block = weights.describe(weights.library_weights())
+    return f"\n{block}\n---\n" if block else ""
+
+
 def load_persona_files() -> str:
     files = sorted(PERSONAS_PATH.glob("*.md"))
     return "\n\n---\n\n".join(
@@ -197,7 +204,7 @@ def assemble_user_message(
 {load_experience_files()}
 
 ---
-
+{_bullets_block()}
 ## SKILLS INVENTORY
 {load_text(SKILLS_PATH)}
 {spec_block}{notes_block}

@@ -53,6 +53,7 @@ class JudgeContext:
     library_text:       str = ""
     personal_additions: str = ""
     cv_text:            str = ""
+    role_weights:       list = field(default_factory=list)   # pipeline.weights.library_weights()
     _cache: dict = field(default_factory=dict, repr=False)
 
     def _memo(self, key, fn):
@@ -112,9 +113,11 @@ def build_context(section: str, jd_text: str = "", cv_text: str = "") -> JudgeCo
     library = "\n\n".join([
         load_text(META_PATH), load_persona_files(), load_experience_files(), load_text(SKILLS_PATH),
     ])
+    from pipeline import weights
     return JudgeContext(
         section=section, jd_text=jd_text or "", library_text=library,
         personal_additions=load_personal_additions(), cv_text=cv_text or "",
+        role_weights=weights.library_weights(),
     )
 
 

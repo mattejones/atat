@@ -192,6 +192,11 @@ field off the CV). Facts you want on record but never on a CV go under a `## Pri
 (or between `<!-- private -->` and `<!-- /private -->`) in an experience file; they are removed
 before anything is sent to a model or shown by the MCP library tools.
 
+To say how much of the CV a role deserves, add a line under the experience file's title:
+`**CV weight:** lead` (4-6 bullets), `standard` (2-4) or `brief` (0-1, the context line carries
+it). The weight goes into the generation prompt and the judge flags a role outside its range. A
+file with no such line behaves as before.
+
 ### Day to day
 
 ```bash

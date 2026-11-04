@@ -741,6 +741,46 @@ def _check_context_echo(text: str) -> list[DeterministicFlag]:
     return flags
 
 
+def _check_bullet_counts(text: str, weights: list) -> list[DeterministicFlag]:
+    """
+    Flag a role with more or fewer bullets than its "CV weight" allows (lead 4-6, standard 2-4,
+    brief 0-1). Roles with no weight in the library are not checked, as before.
+    """
+    from pipeline import weights as w
+    flags: list[DeterministicFlag] = []
+    if not weights:
+        return flags
+    cursor = 0
+    heads: list = []                       # (company, role, start, end) per "### " heading
+    for line in text.split("\n"):
+        start, end = cursor, cursor + len(line)
+        cursor = end + 1
+        if re.match(r"^###\s", line.strip()):
+            title = re.sub(r"\s*\|.*$", "", line.strip()[3:]).strip()
+            company, role = w._split_title(title)
+            heads.append((company, role, start, end))
+    roles = _roles(text)
+    for (company, role, start, end), r in zip(heads, roles):
+        entry = w.weight_for(company, role, weights)
+        if not entry:
+            continue
+        n = len(r["bullets"])
+        if n < entry["min"] or n > entry["max"]:
+            want = (f"{entry['min']}-{entry['max']}" if entry["min"] != entry["max"] else str(entry["max"]))
+            flags.append(DeterministicFlag(
+                type="bullet_count", start_pos=start, end_pos=end, excerpt=line_excerpt(text, start, end),
+                message=(
+                    f"{company} has {n} bullet{'s' if n != 1 else ''}; its CV weight "
+                    f"('{entry['weight']}') calls for {want}."
+                ),
+            ))
+    return flags
+
+
+def line_excerpt(text: str, start: int, end: int) -> str:
+    return text[start:end].strip()[:120]
+
+
 def _check_bullet_fragments(text: str) -> list[DeterministicFlag]:
     """Flag experience bullets too short to be a sentence (a length fix that left a stump)."""
     flags: list[DeterministicFlag] = []
@@ -803,6 +843,8 @@ def run(text: str, ctx: Optional[JudgeContext] = None) -> DeterministicResult:
         flags.extend(_check_repetition(text))
         flags.extend(_check_bullet_fragments(text))
         flags.extend(_check_context_echo(text))
+        if ctx is not None:
+            flags.extend(_check_bullet_counts(text, ctx.role_weights))
     if ctx is not None:
         flags.extend(_check_ad_echo(text, ctx))
 

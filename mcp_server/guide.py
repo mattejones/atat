@@ -65,7 +65,7 @@ run_coverage) can go straight through.
 - tier: T1 | T2 | T3 | EX1
 - work_arrangement: remote | hybrid | office
 - section_name: profile | experience | skills | education | certifications
-- flag type: hotword | em_dash | sentence_length | readability | accuracy | profile_shape | ad_echo | repetition | fragment | third_person | passive | context_echo
+- flag type: hotword | em_dash | sentence_length | readability | accuracy | profile_shape | ad_echo | repetition | fragment | third_person | passive | context_echo | bullet_count
 - report status: pending | accepted | rejected
 - feedback rating: positive | negative
 - job status: draft | queued | running | succeeded | failed | cancelled

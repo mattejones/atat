@@ -12,7 +12,7 @@ import { decodeEntities } from "@/lib/text";
 type FlagStatus = "active" | "dismissed" | "actioned";
 type FlagType   = "hotword" | "em_dash" | "sentence_length" | "readability" | "accuracy"
                 | "profile_shape" | "ad_echo" | "repetition" | "fragment"
-                | "third_person" | "passive" | "context_echo";
+                | "third_person" | "passive" | "context_echo" | "bullet_count";
 
 interface Flag {
   id:               string;
@@ -72,6 +72,7 @@ const FLAG_STYLES: Record<FlagType, { bg: string; border: string; label: string;
   fragment:        { bg: "bg-sky-100",    border: "border-sky-300",    label: "Fragment",        pill: "bg-sky-200 text-sky-800"       },
   third_person:    { bg: "bg-fuchsia-100", border: "border-fuchsia-300", label: "Third person",  pill: "bg-fuchsia-200 text-fuchsia-800" },
   context_echo:    { bg: "bg-cyan-100",    border: "border-cyan-300",    label: "Says it twice",   pill: "bg-cyan-200 text-cyan-800"     },
+  bullet_count:    { bg: "bg-indigo-100",  border: "border-indigo-300",  label: "Bullet count",    pill: "bg-indigo-200 text-indigo-800" },
   passive:         { bg: "bg-stone-100",  border: "border-stone-300",  label: "Passive (advice)", pill: "bg-stone-200 text-stone-800" },
 };
 
